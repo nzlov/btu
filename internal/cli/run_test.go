@@ -51,6 +51,10 @@ func TestOutputDefaultsNextToSource(t *testing.T) {
 	if request.Output != "/tmp/models/source-btu.3mf" {
 		t.Fatalf("output = %q", request.Output)
 	}
+	wantSlots := [4]threemf.ColorRole{threemf.ColorBlue, threemf.ColorRed, threemf.ColorYellow, threemf.ColorBlack}
+	if request.Palette.Slots != wantSlots {
+		t.Fatalf("palette = %v, want %v", request.Palette.Slots, wantSlots)
+	}
 }
 
 func TestFlagsReachConversionRequest(t *testing.T) {

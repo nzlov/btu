@@ -38,7 +38,7 @@ func TestPlanNativeMaterials(t *testing.T) {
 	if plan.mode != "native-mixed" || plan.virtualMixes != 2 || !plan.hasThreeColor {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if got := plan.definitions; got != "4,2,1,1,50,0,g423,w44/37/19,m0,z0,xa0,xb0,d0,o0,u1,cm0;1,2,1,1,50,0,g,w,m0,z2,xa0,xb0,d0,o0,u2,cm3,r1/0.9000/0.1000" {
+	if got := plan.definitions; got != "1,2,1,1,50,0,g123,w44/37/19,m0,z0,xa0,xb0,d0,o0,u1,cm0;4,2,1,1,50,0,g,w,m0,z2,xa0,xb0,d0,o0,u2,cm3,r1/0.9000/0.1000" {
 		t.Fatalf("definitions = %q", got)
 	}
 }

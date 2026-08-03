@@ -23,7 +23,7 @@ type Palette struct {
 }
 
 func DefaultPalette() Palette {
-	return Palette{Slots: [4]ColorRole{ColorWhite, ColorRed, ColorYellow, ColorBlue}}
+	return Palette{Slots: [4]ColorRole{ColorBlue, ColorRed, ColorYellow, ColorBlack}}
 }
 
 func ParsePalette(order string) (Palette, error) {

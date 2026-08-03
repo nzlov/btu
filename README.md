@@ -59,9 +59,9 @@ Use four characters to describe the actual colors loaded in slots 1 through 4:
 - `y`: yellow
 - `k`: black
 
-The default remains white, red, yellow, and blue: `wryb`. Each color can appear
-at most once. For example, black, red, yellow, and blue in slots 1 through 4 is
-`kryb`:
+The default CMYK-style sequence is blue, red, yellow, and black: `bryk`. Each
+color can appear at most once. For example, black, red, yellow, and blue in
+slots 1 through 4 is `kryb`:
 
 ```sh
 ./btu \
@@ -72,7 +72,7 @@ at most once. For example, black, red, yellow, and blue in slots 1 through 4 is
 
 For an ordinary project whose source colors are not limited to the four loaded
 filaments, enable full-spectrum synthesis. The converter decomposes each source
-color into at most three white/red/yellow/blue components using an RYB model,
+color into at most three neutral/red/yellow/blue components using an RYB model,
 creates the required virtual materials, remaps model and face-paint references,
 and enables U1 Local-Z mixed-color printing. For example, pure green becomes a
 50/50 yellow and blue mix.
@@ -85,8 +85,8 @@ and enables U1 Local-Z mixed-color printing. For example, pure green becomes a
 ```
 
 Full-spectrum synthesis requires red, yellow, blue, and exactly one neutral
-filament: white or black. With `--colors kryb`, black is used automatically as
-the neutral filament; there is no separate white-to-black option.
+filament: white or black. The default `bryk` uses black automatically as the
+neutral filament; there is no separate white-to-black option.
 
 Override the built-in baseline when needed:
 

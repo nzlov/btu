@@ -75,7 +75,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 				Name:             "colors",
 				Aliases:          []string{"c"},
 				Usage:            "set slot 1-4 colors using four `WRBYK` characters",
-				Value:            "wryb",
+				Value:            "bryk",
 				OnlyOnce:         true,
 				ValidateDefaults: true,
 				Validator: func(value string) error {

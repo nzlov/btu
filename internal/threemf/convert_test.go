@@ -67,7 +67,7 @@ func TestConvertNativeMixedProject(t *testing.T) {
 	if got := settings["layer_height"]; got != "0.1" {
 		t.Fatalf("layer_height = %v", got)
 	}
-	wantDefinition := "2,1,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "2,4,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
 	if got := settings["mixed_filament_definitions"]; got != wantDefinition {
 		t.Fatalf("mixed_filament_definitions = %v", got)
 	}
@@ -123,7 +123,7 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_model"] != "Snapmaker U1" {
 		t.Fatalf("built-in printer model = %v", settings["printer_model"])
 	}
-	wantDefinition := "3,4,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "3,1,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
 	if settings["mixed_filament_definitions"] != wantDefinition {
 		t.Fatalf("definition = %v", settings["mixed_filament_definitions"])
 	}
@@ -133,12 +133,12 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_variant"] != "0.4" {
 		t.Fatalf("printer_variant = %v, want source nozzle 0.4", settings["printer_variant"])
 	}
-	wantColors := []any{"#FFFFFF", "#FF0000", "#FFFF00", "#0000FF"}
+	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#000000"}
 	if got := settings["filament_colour"]; !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("filament colors = %v, want %v", got, wantColors)
 	}
 	modelSettings := readTestMember(t, outputPath, modelSettingsName)
-	for _, reference := range []string{`value="1"`, `value="2"`, `value="5"`} {
+	for _, reference := range []string{`value="4"`, `value="2"`, `value="5"`} {
 		if !strings.Contains(modelSettings, reference) {
 			t.Fatalf("model settings missing %s: %s", reference, modelSettings)
 		}

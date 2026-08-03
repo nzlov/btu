@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestDefaultPaletteIsCMYK(t *testing.T) {
+	want := [4]ColorRole{ColorBlue, ColorRed, ColorYellow, ColorBlack}
+	if got := DefaultPalette().Slots; got != want {
+		t.Fatalf("default palette = %v, want %v", got, want)
+	}
+}
+
 func TestParsePaletteOrderWithBlack(t *testing.T) {
 	palette, err := ParsePalette("bkry")
 	if err != nil {
