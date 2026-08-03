@@ -7,17 +7,48 @@ import (
 )
 
 func remapPaintEncoding(encoded string, mapping map[int]int) (string, error) {
+	output := make([]int, 0, len(encoded))
+	err := processPaintEncoding(encoded, &output, func(state int) (int, error) {
+		if state == 0 {
+			return 0, nil
+		}
+		mapped, ok := mapping[state]
+		if !ok {
+			return 0, fmt.Errorf("paint references unknown material T%d", state)
+		}
+		return mapped, nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var builder strings.Builder
+	for index := len(output) - 1; index >= 0; index-- {
+		builder.WriteString(strings.ToUpper(strconv.FormatInt(int64(output[index]), 16)))
+	}
+	return builder.String(), nil
+}
+
+func paintStates(encoded string) ([]int, error) {
+	states := make([]int, 0, 1)
+	err := processPaintEncoding(encoded, nil, func(state int) (int, error) {
+		states = append(states, state)
+		return state, nil
+	})
+	return states, err
+}
+
+func processPaintEncoding(encoded string, output *[]int, transform func(int) (int, error)) error {
 	nibbles := make([]int, 0, len(encoded))
 	for index := len(encoded) - 1; index >= 0; index-- {
 		nibble, err := strconv.ParseUint(encoded[index:index+1], 16, 4)
 		if err != nil {
-			return "", fmt.Errorf("invalid paint encoding %q", encoded)
+			return fmt.Errorf("invalid paint encoding %q", encoded)
 		}
 		nibbles = append(nibbles, int(nibble))
 	}
 
 	position := 0
-	output := make([]int, 0, len(nibbles))
 	var visit func() error
 	visit = func() error {
 		if position >= len(nibbles) {
@@ -27,7 +58,9 @@ func remapPaintEncoding(encoded string, mapping map[int]int) (string, error) {
 		position++
 		splitSides := code & 3
 		if splitSides > 0 {
-			output = append(output, code)
+			if output != nil {
+				*output = append(*output, code)
+			}
 			for child := 0; child < splitSides+1; child++ {
 				if err := visit(); err != nil {
 					return err
@@ -51,29 +84,23 @@ func remapPaintEncoding(encoded string, mapping map[int]int) (string, error) {
 				}
 			}
 		}
-		if state > 0 {
-			mapped, ok := mapping[state]
-			if !ok {
-				return fmt.Errorf("paint references unknown material T%d", state)
-			}
-			state = mapped
+		state, err := transform(state)
+		if err != nil {
+			return err
 		}
-		appendPaintLeaf(&output, state)
+		if output != nil {
+			appendPaintLeaf(output, state)
+		}
 		return nil
 	}
 
 	if err := visit(); err != nil {
-		return "", err
+		return err
 	}
 	if position != len(nibbles) {
-		return "", fmt.Errorf("paint encoding %q has %d trailing nibbles", encoded, len(nibbles)-position)
+		return fmt.Errorf("paint encoding %q has %d trailing nibbles", encoded, len(nibbles)-position)
 	}
-
-	var builder strings.Builder
-	for index := len(output) - 1; index >= 0; index-- {
-		builder.WriteString(strings.ToUpper(strconv.FormatInt(int64(output[index]), 16)))
-	}
-	return builder.String(), nil
+	return nil
 }
 
 func appendPaintLeaf(output *[]int, state int) {

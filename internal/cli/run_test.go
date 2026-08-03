@@ -119,6 +119,51 @@ func TestConversionFailureReturnsOne(t *testing.T) {
 	}
 }
 
+func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	calls := 0
+	confirmed := false
+	status := runWithConfirm([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+		calls++
+		if calls == 1 {
+			return threemf.Report{}, &threemf.FullSpectrumRequiredError{ColorCount: 5}
+		}
+		if !request.FullSpectrum {
+			t.Fatal("retry did not enable full spectrum")
+		}
+		return threemf.Report{Mode: "full-spectrum", Output: request.Output, Colors: "bryk"}, nil
+	}, func(_ context.Context, _ *os.File, prompt string) (bool, error) {
+		confirmed = true
+		if !strings.Contains(prompt, "5 colors") {
+			t.Fatalf("prompt = %q", prompt)
+		}
+		return true, nil
+	})
+	if status != 0 || calls != 2 || !confirmed {
+		t.Fatalf("status = %d, calls = %d, confirmed = %v; stderr = %s", status, calls, confirmed, readOutput(t, stderr))
+	}
+	if got := readOutput(t, stdout); !strings.Contains(got, "U1 colors: bryk") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestRejectingFullSpectrumReturnsError(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	calls := 0
+	status := runWithConfirm([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error) {
+		calls++
+		return threemf.Report{}, &threemf.FullSpectrumRequiredError{ColorCount: 6}
+	}, func(context.Context, *os.File, string) (bool, error) {
+		return false, nil
+	})
+	if status != 1 || calls != 1 {
+		t.Fatalf("status = %d, calls = %d", status, calls)
+	}
+	if got := readOutput(t, stderr); !strings.Contains(got, "not enabled for 6 source colors") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
 func tempOutputs(t *testing.T) (*os.File, *os.File) {
 	t.Helper()
 	stdout, err := os.CreateTemp(t.TempDir(), "stdout")

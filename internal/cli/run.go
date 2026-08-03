@@ -16,13 +16,23 @@ import (
 )
 
 type convertFunc func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error)
+type confirmFunc func(context.Context, *os.File, string) (bool, error)
 
 func Run(args []string, stdout, stderr *os.File) int {
-	return run(args, stdout, stderr, threemf.Convert)
+	return runWithConfirm(args, stdout, stderr, threemf.Convert, func(ctx context.Context, output *os.File, prompt string) (bool, error) {
+		return progressui.Confirm(ctx, os.Stdin, output, prompt)
+	})
 }
 
 func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
-	command := newCommand(stdout, stderr, convert)
+	return runWithConfirm(args, stdout, stderr, convert, func(context.Context, *os.File, string) (bool, error) {
+		return false, errors.New("confirmation was not expected")
+	})
+}
+
+// GLUE: keeps the terminal prompt injectable at the CLI/UI boundary for deterministic tests.
+func runWithConfirm(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) int {
+	command := newCommand(stdout, stderr, convert, confirm)
 	osArgs := append([]string{"btu"}, args...)
 	if err := command.Run(context.Background(), osArgs); err != nil {
 		fmt.Fprintf(stderr, "btu: %v\n", err)
@@ -35,7 +45,7 @@ func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
 	return 0
 }
 
-func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command {
+func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) *urfavecli.Command {
 	nozzleFlag := &urfavecli.StringFlag{
 		Name:     "nozzle",
 		Aliases:  []string{"n"},
@@ -74,7 +84,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 			&urfavecli.StringFlag{
 				Name:             "colors",
 				Aliases:          []string{"c"},
-				Usage:            "set slot 1-4 colors using four `WRBYK` characters",
+				Usage:            "set preferred slot 1-4 colors using four `WRBYK` characters",
 				Value:            "bryk",
 				OnlyOnce:         true,
 				ValidateDefaults: true,
@@ -105,18 +115,34 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 			if output == "" {
 				output = defaultOutputPath(source)
 			}
-			report, err := progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.Report, error) {
-				return convert(ctx, threemf.Request{
-					Source:       source,
-					Template:     command.String("template"),
-					Output:       output,
-					Nozzle:       command.String("nozzle"),
-					Palette:      palette,
-					FullSpectrum: command.Bool("full-spectrum"),
-				}, func(event threemf.Progress) {
-					progress(progressui.Progress(event))
+			request := threemf.Request{
+				Source:       source,
+				Template:     command.String("template"),
+				Output:       output,
+				Nozzle:       command.String("nozzle"),
+				Palette:      palette,
+				FullSpectrum: command.Bool("full-spectrum"),
+			}
+			convertRequest := func() (threemf.Report, error) {
+				return progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.Report, error) {
+					return convert(ctx, request, func(event threemf.Progress) {
+						progress(progressui.Progress(event))
+					})
 				})
-			})
+			}
+			report, err := convertRequest()
+			var required *threemf.FullSpectrumRequiredError
+			if errors.As(err, &required) && !request.FullSpectrum {
+				accepted, confirmErr := confirm(ctx, stderr, fmt.Sprintf("Source uses %d colors. Enable full-spectrum mixing?", required.ColorCount))
+				if confirmErr != nil {
+					return urfavecli.Exit(confirmErr, 1)
+				}
+				if !accepted {
+					return urfavecli.Exit(fmt.Errorf("full-spectrum mixing was not enabled for %d source colors", required.ColorCount), 1)
+				}
+				request.FullSpectrum = true
+				report, err = convertRequest()
+			}
 			if err != nil {
 				return urfavecli.Exit(err, 1)
 			}
@@ -126,6 +152,9 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 				fmt.Fprintf(stdout, ", %d mixed materials", report.VirtualMixes)
 			}
 			fmt.Fprintln(stdout, ")")
+			if report.Colors != "" {
+				fmt.Fprintf(stdout, "  U1 colors: %s\n", report.Colors)
+			}
 			keys := make([]int, 0, len(report.PhysicalMapping))
 			for sourceID := range report.PhysicalMapping {
 				keys = append(keys, sourceID)

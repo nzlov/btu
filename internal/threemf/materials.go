@@ -19,7 +19,15 @@ type materialPlan struct {
 	palette         Palette
 }
 
-func planMaterials(source, template map[string]any, palette Palette, fullSpectrum bool) (materialPlan, error) {
+type FullSpectrumRequiredError struct {
+	ColorCount int
+}
+
+func (err *FullSpectrumRequiredError) Error() string {
+	return fmt.Sprintf("source uses %d colors; full-spectrum mixing is required", err.ColorCount)
+}
+
+func planMaterials(source, template map[string]any, palette Palette, fullSpectrum bool, usage materialUsage) (materialPlan, error) {
 	for _, key := range []string{"filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"} {
 		if hasEnabledValue(source[key]) {
 			return materialPlan{}, fmt.Errorf("%s is not representable by U1", key)
@@ -37,14 +45,27 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 		if firstMixed >= 0 {
 			return materialPlan{}, fmt.Errorf("--full-spectrum cannot replace a project that already has native mixed materials")
 		}
+		palette = selectFullSpectrumPalette(source, palette, usage)
 		if err := palette.validateFullSpectrum(); err != nil {
 			return materialPlan{}, err
 		}
-		return planFullSpectrumMaterials(source, template, palette)
+		return planFullSpectrumMaterials(source, template, palette, usage)
 	}
 	if firstMixed < 0 {
 		colors := stringSlice(source["filament_colour"])
-		mapping, err := mapPhysicalMaterials(source, template, len(colors), palette)
+		usage = normalizedPhysicalUsage(usage, len(colors))
+		groups, err := groupUsedMaterials(source, len(colors), usage)
+		if err != nil {
+			return materialPlan{}, err
+		}
+		if len(groups) > len(palette.Slots) {
+			return materialPlan{}, &FullSpectrumRequiredError{ColorCount: len(groups)}
+		}
+		palette, err = selectLayeredPalette(source, stringSlice(template["filament_type"]), palette, usage, len(colors))
+		if err != nil {
+			return materialPlan{}, err
+		}
+		mapping, err := mapPhysicalMaterials(source, template, len(colors), palette, usage)
 		if err != nil {
 			return materialPlan{}, err
 		}
@@ -65,7 +86,15 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 	if physicalCount < 2 {
 		return materialPlan{}, fmt.Errorf("native mixed project has only %d physical materials", physicalCount)
 	}
-	physicalMapping, err := mapPhysicalMaterials(source, template, physicalCount, palette)
+	physicalUsage := make(materialUsage, physicalCount)
+	for material := 1; material <= physicalCount; material++ {
+		physicalUsage[material] = 1
+	}
+	palette, err := selectLayeredPalette(source, stringSlice(template["filament_type"]), palette, physicalUsage, physicalCount)
+	if err != nil {
+		return materialPlan{}, err
+	}
+	physicalMapping, err := mapPhysicalMaterials(source, template, physicalCount, palette, physicalUsage)
 	if err != nil {
 		return materialPlan{}, err
 	}
@@ -122,7 +151,7 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 	}, nil
 }
 
-func planFullSpectrumMaterials(source, template map[string]any, palette Palette) (materialPlan, error) {
+func planFullSpectrumMaterials(source, template map[string]any, palette Palette, usage materialUsage) (materialPlan, error) {
 	colors := stringSlice(source["filament_colour"])
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
@@ -130,12 +159,16 @@ func planFullSpectrumMaterials(source, template map[string]any, palette Palette)
 	if len(stringSlice(template["filament_colour"])) != len(palette.Slots) {
 		return materialPlan{}, fmt.Errorf("U1 template must have exactly four physical material slots")
 	}
+	usage = normalizedPhysicalUsage(usage, len(colors))
 
 	mapping := make(map[int]int, len(colors))
 	definitions := make([]string, 0, len(colors))
 	mixedTargets := make(map[string]int)
 	hasThreeColor := false
 	for index, value := range colors {
+		if _, used := usage[index+1]; !used {
+			continue
+		}
 		color, err := parseColor(value)
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("source T%d: %w", index+1, err)
@@ -174,6 +207,25 @@ func planFullSpectrumMaterials(source, template map[string]any, palette Palette)
 		target := len(palette.Slots) + stableID
 		mixedTargets[signature] = target
 		mapping[index+1] = target
+	}
+	for index, value := range colors {
+		if mapping[index+1] > 0 {
+			continue
+		}
+		color, err := parseColor(value)
+		if err != nil {
+			return materialPlan{}, fmt.Errorf("source T%d: %w", index+1, err)
+		}
+		bestSlot := 1
+		bestDistance := math.MaxInt
+		for slot, role := range palette.Slots {
+			distance := colorDistance(color, roleRGB(role))
+			if distance < bestDistance {
+				bestDistance = distance
+				bestSlot = slot + 1
+			}
+		}
+		mapping[index+1] = bestSlot
 	}
 
 	return materialPlan{
@@ -312,7 +364,70 @@ func parseWeights(value string, count int) ([]int, error) {
 	return weights, nil
 }
 
-func mapPhysicalMaterials(source, template map[string]any, count int, palette Palette) (map[int]int, error) {
+type materialGroup struct {
+	ids    []int
+	color  [3]int
+	typeID string
+	weight float64
+}
+
+func normalizedPhysicalUsage(usage materialUsage, count int) materialUsage {
+	result := make(materialUsage)
+	for material, weight := range usage {
+		if material > 0 && material <= count && weight > 0 {
+			result.add(material, weight)
+		}
+	}
+	if len(result) == 0 {
+		for material := range usage {
+			if material > 0 && material <= count {
+				result[material] = 1
+			}
+		}
+		if len(result) == 0 {
+			for material := 1; material <= count; material++ {
+				result[material] = 1
+			}
+		}
+	}
+	return result
+}
+
+func groupUsedMaterials(source map[string]any, count int, usage materialUsage) ([]materialGroup, error) {
+	sourceColors := stringSlice(source["filament_colour"])
+	sourceTypes := stringSlice(source["filament_type"])
+	if count == 0 || len(sourceColors) < count || len(sourceTypes) < count {
+		return nil, fmt.Errorf("source physical material metadata is incomplete")
+	}
+	groups := make([]materialGroup, 0, len(usage))
+	groupByKey := make(map[string]int, len(usage))
+	for material := 1; material <= count; material++ {
+		weight, used := usage[material]
+		if !used {
+			continue
+		}
+		color, err := parseColor(sourceColors[material-1])
+		if err != nil {
+			return nil, fmt.Errorf("source T%d: %w", material, err)
+		}
+		key := fmt.Sprintf("%d/%d/%d/%s", color[0], color[1], color[2], strings.ToLower(sourceTypes[material-1]))
+		if index, exists := groupByKey[key]; exists {
+			groups[index].ids = append(groups[index].ids, material)
+			groups[index].weight += weight
+			continue
+		}
+		groupByKey[key] = len(groups)
+		groups = append(groups, materialGroup{
+			ids:    []int{material},
+			color:  color,
+			typeID: sourceTypes[material-1],
+			weight: weight,
+		})
+	}
+	return groups, nil
+}
+
+func mapPhysicalMaterials(source, template map[string]any, count int, palette Palette, usage materialUsage) (map[int]int, error) {
 	sourceColors := stringSlice(source["filament_colour"])
 	sourceTypes := stringSlice(source["filament_type"])
 	templateColors := stringSlice(template["filament_colour"])
@@ -320,41 +435,99 @@ func mapPhysicalMaterials(source, template map[string]any, count int, palette Pa
 	if count == 0 || len(sourceColors) < count || len(sourceTypes) < count {
 		return nil, fmt.Errorf("source physical material metadata is incomplete")
 	}
-	if count > len(palette.Slots) {
-		return nil, fmt.Errorf("source has %d colors; use --full-spectrum to synthesize them from four slots", count)
-	}
 	if len(templateColors) != len(palette.Slots) || len(templateTypes) < len(palette.Slots) {
 		return nil, fmt.Errorf("U1 template must have exactly four physical material slots")
 	}
-
-	sourceRGB := make([][3]int, count)
-	for index := range sourceRGB {
-		color, err := parseColor(sourceColors[index])
-		if err != nil {
-			return nil, fmt.Errorf("source T%d: %w", index+1, err)
-		}
-		sourceRGB[index] = color
+	usage = normalizedPhysicalUsage(usage, count)
+	groups, err := groupUsedMaterials(source, count, usage)
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) > len(palette.Slots) {
+		return nil, &FullSpectrumRequiredError{ColorCount: len(groups)}
 	}
 
-	bestCost := math.MaxInt
-	best := make([]int, count)
-	current := make([]int, count)
-	used := make([]bool, len(templateColors))
-	var search func(int, int)
-	search = func(sourceIndex, cost int) {
+	best, _, err := assignMaterialGroups(groups, templateTypes, palette)
+	if err != nil {
+		return nil, err
+	}
+	mapping := make(map[int]int, count)
+	for index, target := range best {
+		for _, material := range groups[index].ids {
+			mapping[material] = target
+		}
+	}
+	for material := 1; material <= count; material++ {
+		if mapping[material] > 0 {
+			continue
+		}
+		color, err := parseColor(sourceColors[material-1])
+		if err != nil {
+			return nil, fmt.Errorf("source T%d: %w", material, err)
+		}
+		bestSlot := 0
+		if role, neutral := neutralColorRole(color); neutral {
+			switch role {
+			case ColorWhite:
+				bestSlot = palette.slot(ColorBlack)
+			case ColorBlack:
+				bestSlot = palette.slot(ColorWhite)
+			}
+		}
+		if bestSlot > 0 && !strings.EqualFold(sourceTypes[material-1], templateTypes[bestSlot-1]) {
+			bestSlot = 0
+		}
+		bestDistance := math.MaxInt
+		for slot := range templateColors {
+			if bestSlot > 0 {
+				break
+			}
+			if !strings.EqualFold(sourceTypes[material-1], templateTypes[slot]) {
+				continue
+			}
+			distance := palette.matchDistance(color, palette.Slots[slot])
+			if distance < bestDistance {
+				bestDistance = distance
+				bestSlot = slot + 1
+			}
+		}
+		if bestSlot == 0 {
+			for slot := range templateColors {
+				distance := palette.matchDistance(color, palette.Slots[slot])
+				if distance < bestDistance {
+					bestDistance = distance
+					bestSlot = slot + 1
+				}
+			}
+		}
+		mapping[material] = bestSlot
+	}
+	return mapping, nil
+}
+
+func assignMaterialGroups(groups []materialGroup, templateTypes []string, palette Palette) ([]int, float64, error) {
+	bestCost := math.Inf(1)
+	best := make([]int, len(groups))
+	current := make([]int, len(groups))
+	if len(templateTypes) != len(palette.Slots) {
+		return nil, 0, fmt.Errorf("U1 template must have exactly four physical material slots")
+	}
+	used := make([]bool, len(templateTypes))
+	var search func(int, float64)
+	search = func(sourceIndex int, cost float64) {
 		if cost >= bestCost {
 			return
 		}
-		if sourceIndex == count {
+		if sourceIndex == len(groups) {
 			bestCost = cost
 			copy(best, current)
 			return
 		}
-		for templateIndex := range templateColors {
-			if used[templateIndex] || !strings.EqualFold(sourceTypes[sourceIndex], templateTypes[templateIndex]) {
+		for templateIndex := range templateTypes {
+			if used[templateIndex] || !strings.EqualFold(groups[sourceIndex].typeID, templateTypes[templateIndex]) {
 				continue
 			}
-			distance := palette.matchDistance(sourceRGB[sourceIndex], palette.Slots[templateIndex])
+			distance := float64(palette.matchDistance(groups[sourceIndex].color, palette.Slots[templateIndex])) * groups[sourceIndex].weight
 			used[templateIndex] = true
 			current[sourceIndex] = templateIndex + 1
 			search(sourceIndex+1, cost+distance)
@@ -362,14 +535,110 @@ func mapPhysicalMaterials(source, template map[string]any, count int, palette Pa
 		}
 	}
 	search(0, 0)
-	if bestCost == math.MaxInt {
-		return nil, fmt.Errorf("cannot match source material types to template slots")
+	if math.IsInf(bestCost, 1) {
+		return nil, 0, fmt.Errorf("cannot match source material types to template slots")
 	}
-	mapping := make(map[int]int, count)
-	for index, target := range best {
-		mapping[index+1] = target
+	return best, bestCost, nil
+}
+
+func selectLayeredPalette(source map[string]any, templateTypes []string, palette Palette, usage materialUsage, count int) (Palette, error) {
+	groups, err := groupUsedMaterials(source, count, usage)
+	if err != nil {
+		return Palette{}, err
 	}
-	return mapping, nil
+	_, bestCost, err := assignMaterialGroups(groups, templateTypes, palette)
+	if err != nil {
+		return Palette{}, err
+	}
+	best := palette
+	bestReplacementRank := math.MaxInt
+	replaced := false
+	omitted := ColorRole("")
+	for _, role := range colorRoles {
+		if palette.slot(role) == 0 {
+			omitted = role
+			break
+		}
+	}
+	for index, role := range palette.Slots {
+		candidate := palette
+		candidate.Slots[index] = omitted
+		_, cost, candidateErr := assignMaterialGroups(groups, templateTypes, candidate)
+		if candidateErr != nil {
+			continue
+		}
+		rank := replacementRank(role)
+		if cost < bestCost || replaced && cost == bestCost && rank < bestReplacementRank {
+			best = candidate
+			bestCost = cost
+			bestReplacementRank = rank
+			replaced = true
+		}
+	}
+	return best, nil
+}
+
+func selectFullSpectrumPalette(source map[string]any, palette Palette, usage materialUsage) Palette {
+	neutral := preferredNeutral(source, palette, usage)
+	required := map[ColorRole]bool{ColorRed: true, ColorYellow: true, ColorBlue: true, neutral: true}
+	missing := make([]ColorRole, 0, 1)
+	for role := range required {
+		if palette.slot(role) == 0 {
+			missing = append(missing, role)
+		}
+	}
+	result := palette
+	for _, role := range missing {
+		for index, current := range result.Slots {
+			if !required[current] {
+				result.Slots[index] = role
+				break
+			}
+		}
+	}
+	return result
+}
+
+func preferredNeutral(source map[string]any, palette Palette, usage materialUsage) ColorRole {
+	colors := stringSlice(source["filament_colour"])
+	weights := map[ColorRole]float64{ColorWhite: 0, ColorBlack: 0}
+	for material, weight := range usage {
+		if material <= 0 || material > len(colors) {
+			continue
+		}
+		color, err := parseColor(colors[material-1])
+		if err != nil {
+			continue
+		}
+		if role, ok := neutralColorRole(color); ok {
+			weights[role] += weight
+		}
+	}
+	if weights[ColorWhite] > weights[ColorBlack] {
+		return ColorWhite
+	}
+	if weights[ColorBlack] > weights[ColorWhite] {
+		return ColorBlack
+	}
+	if palette.slot(ColorWhite) > 0 {
+		return ColorWhite
+	}
+	return ColorBlack
+}
+
+func replacementRank(role ColorRole) int {
+	switch role {
+	case ColorRed:
+		return 0
+	case ColorBlue:
+		return 1
+	case ColorYellow:
+		return 2
+	case ColorWhite, ColorBlack:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func parseColor(value string) ([3]int, error) {

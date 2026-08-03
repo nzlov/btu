@@ -50,6 +50,7 @@ type ProgressFunc func(Progress)
 type Report struct {
 	Mode            string
 	Output          string
+	Colors          string
 	PhysicalMapping map[int]int
 	VirtualMixes    int
 }
@@ -97,11 +98,15 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	if err != nil {
 		return Report{}, fmt.Errorf("source project settings: %w", err)
 	}
+	usage, err := analyzeMaterialUsage(source)
+	if err != nil {
+		return Report{}, err
+	}
 	baseline, err := loadRequestedU1Baseline(request.Template, request.Nozzle, sourceSettings)
 	if err != nil {
 		return Report{}, err
 	}
-	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum)
+	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, usage)
 	if err != nil {
 		return Report{}, err
 	}
@@ -159,6 +164,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	return Report{
 		Mode:            plan.mode,
 		Output:          request.Output,
+		Colors:          plan.palette.String(),
 		PhysicalMapping: plan.physicalMapping,
 		VirtualMixes:    plan.virtualMixes,
 	}, nil

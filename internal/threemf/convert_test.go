@@ -67,7 +67,7 @@ func TestConvertNativeMixedProject(t *testing.T) {
 	if got := settings["layer_height"]; got != "0.1" {
 		t.Fatalf("layer_height = %v", got)
 	}
-	wantDefinition := "2,4,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "2,3,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
 	if got := settings["mixed_filament_definitions"]; got != wantDefinition {
 		t.Fatalf("mixed_filament_definitions = %v", got)
 	}

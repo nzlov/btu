@@ -106,15 +106,38 @@ func (palette Palette) outputColors() []string {
 	return colors
 }
 
-func (palette Palette) matchDistance(source [3]int, role ColorRole) int {
-	distance := colorDistance(source, roleRGB(role))
-	if role == ColorBlack && palette.slot(ColorWhite) == 0 {
-		whiteDistance := colorDistance(source, roleRGB(ColorWhite))
-		if whiteDistance < distance {
-			return whiteDistance
+func (palette Palette) String() string {
+	var result strings.Builder
+	for _, role := range palette.Slots {
+		result.WriteByte(roleCode(role))
+	}
+	return result.String()
+}
+
+func exactColorRole(color [3]int) (ColorRole, bool) {
+	for _, role := range colorRoles {
+		if color == roleRGB(role) {
+			return role, true
 		}
 	}
-	return distance
+	return "", false
+}
+
+func neutralColorRole(color [3]int) (ColorRole, bool) {
+	whiteDistance := colorDistance(color, roleRGB(ColorWhite))
+	blackDistance := colorDistance(color, roleRGB(ColorBlack))
+	const neutralThreshold = 3 * 64 * 64
+	if whiteDistance <= neutralThreshold && whiteDistance < blackDistance {
+		return ColorWhite, true
+	}
+	if blackDistance <= neutralThreshold {
+		return ColorBlack, true
+	}
+	return "", false
+}
+
+func (palette Palette) matchDistance(source [3]int, role ColorRole) int {
+	return colorDistance(source, roleRGB(role))
 }
 
 type colorComponent struct {
@@ -244,6 +267,23 @@ func roleFromCode(code byte) (ColorRole, bool) {
 		return ColorBlack, true
 	default:
 		return "", false
+	}
+}
+
+func roleCode(role ColorRole) byte {
+	switch role {
+	case ColorWhite:
+		return 'w'
+	case ColorRed:
+		return 'r'
+	case ColorBlue:
+		return 'b'
+	case ColorYellow:
+		return 'y'
+	case ColorBlack:
+		return 'k'
+	default:
+		return '?'
 	}
 }
 

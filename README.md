@@ -30,7 +30,7 @@ Options:
 | Long | Short | Required | Purpose |
 | --- | --- | --- | --- |
 | `--output FILE` | `-o FILE` | no | Override the default `SOURCE-btu.3mf` path |
-| `--colors WRBYK` | `-c WRBYK` | no | Colors loaded in slots 1 through 4 |
+| `--colors WRBYK` | `-c WRBYK` | no | Preferred base-color order for slots 1 through 4 |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
 | `--nozzle SIZE` | `-n SIZE` | no | Force the 0.2, 0.4, 0.6, or 0.8 mm built-in baseline |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
@@ -51,7 +51,7 @@ should override the built-in baseline. When `--template` and `--nozzle` are
 used together, the template is loaded first and the selected built-in nozzle
 profile is applied on top; unrelated template settings and metadata remain.
 
-Use four characters to describe the actual colors loaded in slots 1 through 4:
+Use four characters to describe the preferred base colors in slots 1 through 4:
 
 - `w`: white
 - `r`: red
@@ -70,6 +70,13 @@ slots 1 through 4 is `kryb`:
     ~/Downloads/model.3mf
 ```
 
+For ordinary projects, `btu` measures the transformed model-surface triangle
+area of each material and maps only colors that the model actually uses. If the
+source needs a missing base color, an unneeded configured base color can be
+replaced automatically. The final four-slot order is printed as `U1 colors`;
+load those reported colors before printing. For example, a black/white/yellow
+model can turn the default `bryk` into `bwyk` because red is unused.
+
 For an ordinary project whose source colors are not limited to the four loaded
 filaments, enable full-spectrum synthesis. The converter decomposes each source
 color into at most three neutral/red/yellow/blue components using an RYB model,
@@ -84,9 +91,16 @@ and enables U1 Local-Z mixed-color printing. For example, pure green becomes a
     ~/Downloads/model.3mf
 ```
 
+When more than four distinct material colors are actually visible and
+`--full-spectrum` was not supplied, an interactive terminal asks whether to
+enable it. Answering yes retries the conversion automatically; answering no
+returns an error. Non-interactive runs return an error with instructions to
+pass `--full-spectrum` explicitly instead of waiting for input.
+
 Full-spectrum synthesis requires red, yellow, blue, and exactly one neutral
-filament: white or black. The default `bryk` uses black automatically as the
-neutral filament; there is no separate white-to-black option.
+filament: white or black. When the source uses both neutrals, `btu` compares
+their model-surface area and keeps the one with the larger estimated visual
+impact. The final choice is included in the reported `U1 colors` order.
 
 Override the built-in baseline when needed:
 
