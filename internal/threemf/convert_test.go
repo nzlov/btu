@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,61 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestConvertRequiresReplaceForExistingOutput(t *testing.T) {
+	directory := t.TempDir()
+	outputPath := filepath.Join(directory, "output.3mf")
+	if err := os.WriteFile(outputPath, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Convert(context.Background(), Request{
+		Source: filepath.Join(directory, "source.3mf"),
+		Output: outputPath,
+	}, nil)
+	var exists *OutputExistsError
+	if !errors.As(err, &exists) || exists.Path != outputPath {
+		t.Fatalf("error = %v, want OutputExistsError for %s", err, outputPath)
+	}
+	data, readErr := os.ReadFile(outputPath)
+	if readErr != nil || string(data) != "existing" {
+		t.Fatalf("existing output changed: data=%q err=%v", data, readErr)
+	}
+}
+
+func TestConvertReplaceOverwritesExistingOutput(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour": []string{"#FF0000"},
+		"filament_type":   []string{"PLA"},
+		"nozzle_diameter": []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/></config>`,
+	})
+	if err := os.WriteFile(outputPath, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Convert(context.Background(), Request{
+		Source:  sourcePath,
+		Output:  outputPath,
+		Replace: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Output != outputPath {
+		t.Fatalf("output = %q", report.Output)
+	}
+	reader, err := zip.OpenReader(outputPath)
+	if err != nil {
+		t.Fatalf("replacement is not a 3MF archive: %v", err)
+	}
+	reader.Close()
+}
 
 func TestConvertNativeMixedProject(t *testing.T) {
 	directory := t.TempDir()
@@ -67,7 +123,7 @@ func TestConvertNativeMixedProject(t *testing.T) {
 	if got := settings["layer_height"]; got != "0.1" {
 		t.Fatalf("layer_height = %v", got)
 	}
-	wantDefinition := "2,3,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "2,4,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
 	if got := settings["mixed_filament_definitions"]; got != wantDefinition {
 		t.Fatalf("mixed_filament_definitions = %v", got)
 	}
@@ -123,7 +179,7 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_model"] != "Snapmaker U1" {
 		t.Fatalf("built-in printer model = %v", settings["printer_model"])
 	}
-	wantDefinition := "3,1,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "1,3,1,1,50,0,g134,w26/72/2,m0,z0,xa0,xb0,d0,o0,u1,cm0"
 	if settings["mixed_filament_definitions"] != wantDefinition {
 		t.Fatalf("definition = %v", settings["mixed_filament_definitions"])
 	}
@@ -133,7 +189,7 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_variant"] != "0.4" {
 		t.Fatalf("printer_variant = %v, want source nozzle 0.4", settings["printer_variant"])
 	}
-	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#000000"}
+	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#FFFFFF"}
 	if got := settings["filament_colour"]; !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("filament colors = %v, want %v", got, wantColors)
 	}

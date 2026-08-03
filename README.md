@@ -22,17 +22,19 @@ go build -o btu ./cmd/btu
     ~/Downloads/Fantasmino.3mf
 ```
 
-Without `--output`, this writes `~/Downloads/Fantasmino-btu.3mf`. Existing
-outputs are never overwritten.
+Without `--output`, this writes `~/Downloads/Fantasmino-btu.3mf`. When that
+file already exists, an interactive terminal asks before replacing it. Pass
+`--replace` for non-interactive replacement or to skip the prompt.
 
 Options:
 
 | Long | Short | Required | Purpose |
 | --- | --- | --- | --- |
 | `--output FILE` | `-o FILE` | no | Override the default `SOURCE-btu.3mf` path |
-| `--colors WRBYK` | `-c WRBYK` | no | Preferred base-color order for slots 1 through 4 |
+| `--replace` | `-r` | no | Replace an existing output without prompting |
+| `--colors CMYGWB` | `-c CMYGWB` | no | Preferred base-color order for slots 1 through 4 |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
-| `--nozzle SIZE` | `-n SIZE` | no | Force the 0.2, 0.4, 0.6, or 0.8 mm built-in baseline |
+| `--nozzle DIAMETER_MM` | `-n DIAMETER_MM` | no | Force a built-in baseline; accepts `0.2`, `0.4`, `0.6`, or `0.8` (millimeters) |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
 
 By default, `btu` reads `nozzle_diameter` from the source 3MF and selects the
@@ -51,38 +53,42 @@ should override the built-in baseline. When `--template` and `--nozzle` are
 used together, the template is loaded first and the selected built-in nozzle
 profile is applied on top; unrelated template settings and metadata remain.
 
-Use four characters to describe the preferred base colors in slots 1 through 4:
+Use four characters to describe the preferred colors in slots 1 through 4:
 
-- `w`: white
-- `r`: red
-- `b`: blue
+- `c`: cyan/blue
+- `m`: magenta/red
 - `y`: yellow
-- `k`: black
+- `g`: gray
+- `w`: white
+- `b`: black
 
-The default CMYK-style sequence is blue, red, yellow, and black: `bryk`. Each
-color can appear at most once. For example, black, red, yellow, and blue in
-slots 1 through 4 is `kryb`:
+The default sequence is cyan, magenta, yellow, and gray: `cmyg`. Each color can
+appear at most once. For example, black, magenta, yellow, and cyan in slots 1
+through 4 is `bmyc`:
 
 ```sh
 ./btu \
     --output ~/Downloads/model-for-u1.3mf \
-    --colors kryb \
+    --colors bmyc \
     ~/Downloads/model.3mf
 ```
 
-For ordinary projects, `btu` measures the transformed model-surface triangle
-area of each material and maps only colors that the model actually uses. If the
-source needs a missing base color, an unneeded configured base color can be
-replaced automatically. The final four-slot order is printed as `U1 colors`;
-load those reported colors before printing. For example, a black/white/yellow
-model can turn the default `bryk` into `bwyk` because red is unused.
+For ordinary projects, `btu` inspects every declared material color, including
+colors that currently have no model faces. It recognizes cyan, magenta, yellow,
+gray, white, and black, then chooses four physical filaments. Every declared
+color constrains that choice and receives either its corresponding physical slot
+or a generated virtual mixture. CMYG remains the preferred order when candidate
+palettes reproduce the declared colors equally well. The final order is printed
+as `U1 colors`; load those reported colors before printing.
 
-For an ordinary project whose source colors are not limited to the four loaded
-filaments, enable full-spectrum synthesis. The converter decomposes each source
-color into at most three neutral/red/yellow/blue components using an RYB model,
-creates the required virtual materials, remaps model and face-paint references,
-and enables U1 Local-Z mixed-color printing. For example, pure green becomes a
-50/50 yellow and blue mix.
+The converter mixes only when a mapped color cannot use a physical slot. It
+searches one- to four-component recipes with integer percentages,
+scores their preview colors with the same MIT-licensed FilamentMixer model used
+by FullSpectrum, creates the required virtual materials, remaps model and
+face-paint references, and enables U1 Local-Z mixed-color printing. Black can be
+mixed from CMY when all primary slots are needed; gray can be mixed from white
+and black when those two slots are the better four-color choice. Preview colors
+remain estimates because physical filament opacity and transmission vary.
 
 ```sh
 ./btu \
@@ -91,16 +97,15 @@ and enables U1 Local-Z mixed-color printing. For example, pure green becomes a
     ~/Downloads/model.3mf
 ```
 
-When more than four distinct material colors are actually visible and
+When any declared source color is not one of the six available colors and
 `--full-spectrum` was not supplied, an interactive terminal asks whether to
-enable it. Answering yes retries the conversion automatically; answering no
-returns an error. Non-interactive runs return an error with instructions to
-pass `--full-spectrum` explicitly instead of waiting for input.
-
-Full-spectrum synthesis requires red, yellow, blue, and exactly one neutral
-filament: white or black. When the source uses both neutrals, `btu` compares
-their model-surface area and keeps the one with the larger estimated visual
-impact. The final choice is included in the reported `U1 colors` order.
+keep the mixed colors. It then opens one mapping table for all detected colors.
+Each row can target any of the six colors or any other mixed color already
+detected in the project, so multiple source colors can share one generated
+mixture. Answering yes defaults non-base rows to their original colors;
+answering no defaults them to the closest CMY replacement while still allowing
+manual changes. Non-interactive runs return an error with instructions to pass
+`--full-spectrum`, which keeps all detected colors without opening the table.
 
 Override the built-in baseline when needed:
 
@@ -114,8 +119,9 @@ Override the built-in baseline when needed:
 Progress uses Bubble Tea in an interactive terminal and plain stage messages
 when output is redirected or run without a TTY.
 
-The converter does not overwrite an existing output. Bambu penetration-layer
-settings have no direct U1 equivalent and are not transferred. Non-linear or
-per-part gradient curves are rejected rather than approximated. A project that
-already contains native mixed materials uses its existing definitions and must
-not be passed with `--full-spectrum`.
+Replacement is published only after the temporary 3MF passes verification.
+Declining the prompt leaves the existing output unchanged. Bambu
+penetration-layer settings have no direct U1 equivalent and are not transferred.
+Non-linear or per-part gradient curves are rejected rather than approximated. A
+project that already contains native mixed materials uses its existing
+definitions and must not be passed with `--full-spectrum`.

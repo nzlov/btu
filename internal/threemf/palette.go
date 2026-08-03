@@ -9,34 +9,35 @@ import (
 type ColorRole string
 
 const (
-	ColorWhite  ColorRole = "white"
-	ColorRed    ColorRole = "red"
-	ColorBlue   ColorRole = "blue"
-	ColorYellow ColorRole = "yellow"
-	ColorBlack  ColorRole = "black"
+	ColorCyan    ColorRole = "cyan"
+	ColorMagenta ColorRole = "magenta"
+	ColorYellow  ColorRole = "yellow"
+	ColorGray    ColorRole = "gray"
+	ColorWhite   ColorRole = "white"
+	ColorBlack   ColorRole = "black"
 )
 
-var colorRoles = [...]ColorRole{ColorWhite, ColorRed, ColorBlue, ColorYellow, ColorBlack}
+var colorRoles = [...]ColorRole{ColorCyan, ColorMagenta, ColorYellow, ColorGray, ColorWhite, ColorBlack}
 
 type Palette struct {
 	Slots [4]ColorRole
 }
 
 func DefaultPalette() Palette {
-	return Palette{Slots: [4]ColorRole{ColorBlue, ColorRed, ColorYellow, ColorBlack}}
+	return Palette{Slots: [4]ColorRole{ColorCyan, ColorMagenta, ColorYellow, ColorGray}}
 }
 
 func ParsePalette(order string) (Palette, error) {
 	order = strings.ToLower(strings.TrimSpace(order))
 	if len(order) != 4 {
-		return Palette{}, fmt.Errorf("colors requires exactly four characters from wrbyk")
+		return Palette{}, fmt.Errorf("colors requires exactly four characters from cmygwb")
 	}
 	palette := Palette{}
 	seen := make(map[ColorRole]bool, len(palette.Slots))
 	for index := range order {
 		role, ok := roleFromCode(order[index])
 		if !ok {
-			return Palette{}, fmt.Errorf("unsupported color code %q; use w, r, b, y, or k", order[index:index+1])
+			return Palette{}, fmt.Errorf("unsupported color code %q; use c, m, y, g, w, or b", order[index:index+1])
 		}
 		if seen[role] {
 			return Palette{}, fmt.Errorf("color code %q appears more than once", order[index:index+1])
@@ -61,28 +62,17 @@ func (palette Palette) normalized() (Palette, error) {
 	seen := make(map[ColorRole]bool, len(colorRoles))
 	for _, role := range palette.Slots {
 		if !isColorRole(role) || seen[role] {
-			return Palette{}, fmt.Errorf("palette must contain four different colors from wrbyk")
+			return Palette{}, fmt.Errorf("palette must contain four different colors from cmygwb")
 		}
 		seen[role] = true
 	}
 	return palette, nil
 }
 
-func (palette Palette) validateFullSpectrum() error {
-	for _, role := range []ColorRole{ColorRed, ColorYellow, ColorBlue} {
-		if palette.slot(role) == 0 {
-			return fmt.Errorf("--full-spectrum colors must contain r, y, and b")
-		}
-	}
-	hasWhite := palette.slot(ColorWhite) > 0
-	hasBlack := palette.slot(ColorBlack) > 0
-	if hasWhite == hasBlack {
-		return fmt.Errorf("--full-spectrum colors must contain exactly one of w or k")
-	}
-	return nil
-}
-
 func (palette Palette) neutralRole() ColorRole {
+	if palette.slot(ColorGray) > 0 {
+		return ColorGray
+	}
 	if palette.slot(ColorWhite) > 0 {
 		return ColorWhite
 	}
@@ -123,10 +113,48 @@ func exactColorRole(color [3]int) (ColorRole, bool) {
 	return "", false
 }
 
+func baseColorRole(color [3]int) (ColorRole, bool) {
+	if max(color[0], color[1], color[2])-min(color[0], color[1], color[2]) > 48 {
+		role := ColorCyan
+		distance := colorDistance(color, roleRGB(role))
+		for _, candidate := range []ColorRole{ColorMagenta, ColorYellow} {
+			candidateDistance := colorDistance(color, roleRGB(candidate))
+			if candidateDistance < distance {
+				role = candidate
+				distance = candidateDistance
+			}
+		}
+		return role, distance <= 3*72*72
+	}
+	role, distance := nearestColorRole(color)
+	threshold := 3 * 64 * 64
+	if role == ColorGray {
+		threshold = 3 * 48 * 48
+	}
+	return role, distance <= threshold
+}
+
+func nearestColorRole(color [3]int) (ColorRole, int) {
+	best := colorRoles[0]
+	bestDistance := colorDistance(color, roleRGB(best))
+	for _, role := range colorRoles[1:] {
+		distance := colorDistance(color, roleRGB(role))
+		if distance < bestDistance {
+			best = role
+			bestDistance = distance
+		}
+	}
+	return best, bestDistance
+}
+
 func neutralColorRole(color [3]int) (ColorRole, bool) {
+	grayDistance := colorDistance(color, roleRGB(ColorGray))
 	whiteDistance := colorDistance(color, roleRGB(ColorWhite))
 	blackDistance := colorDistance(color, roleRGB(ColorBlack))
 	const neutralThreshold = 3 * 64 * 64
+	if grayDistance <= 3*48*48 && grayDistance < whiteDistance && grayDistance < blackDistance {
+		return ColorGray, true
+	}
 	if whiteDistance <= neutralThreshold && whiteDistance < blackDistance {
 		return ColorWhite, true
 	}
@@ -137,7 +165,11 @@ func neutralColorRole(color [3]int) (ColorRole, bool) {
 }
 
 func (palette Palette) matchDistance(source [3]int, role ColorRole) int {
-	return colorDistance(source, roleRGB(role))
+	distance := colorDistance(source, roleRGB(role))
+	if classified, base := baseColorRole(source); base && classified != role {
+		distance += 3 * 255 * 255
+	}
+	return distance
 }
 
 type colorComponent struct {
@@ -145,7 +177,7 @@ type colorComponent struct {
 	weight float64
 }
 
-func decomposeRYB(color [3]int, palette Palette) []colorComponent {
+func decomposeCMY(color [3]int, palette Palette) []colorComponent {
 	r := float64(color[0]) / 255
 	g := float64(color[1]) / 255
 	b := float64(color[2]) / 255
@@ -154,9 +186,9 @@ func decomposeRYB(color [3]int, palette Palette) []colorComponent {
 			return []colorComponent{{role: ColorBlack, weight: 1}}
 		}
 		return []colorComponent{
-			{role: ColorRed, weight: 1},
+			{role: ColorMagenta, weight: 1},
 			{role: ColorYellow, weight: 1},
-			{role: ColorBlue, weight: 1},
+			{role: ColorCyan, weight: 1},
 		}
 	}
 
@@ -184,9 +216,9 @@ func decomposeRYB(color [3]int, palette Palette) []colorComponent {
 
 	components := []colorComponent{
 		{role: palette.neutralRole(), weight: white},
-		{role: ColorRed, weight: r},
+		{role: ColorMagenta, weight: r},
 		{role: ColorYellow, weight: yellow},
-		{role: ColorBlue, weight: b},
+		{role: ColorCyan, weight: b},
 	}
 	total := white + r + yellow + b
 	filtered := components[:0]
@@ -236,18 +268,18 @@ func normalizedPercentages(values []float64) []int {
 }
 
 func isColorRole(role ColorRole) bool {
-	return role == ColorWhite || role == ColorRed || role == ColorBlue || role == ColorYellow || role == ColorBlack
+	return role == ColorCyan || role == ColorMagenta || role == ColorYellow || role == ColorGray || role == ColorWhite || role == ColorBlack
 }
 
 func mixRoleIndex(role ColorRole) int {
 	switch role {
-	case ColorWhite, ColorBlack:
+	case ColorGray, ColorWhite, ColorBlack:
 		return 0
-	case ColorRed:
+	case ColorMagenta:
 		return 1
 	case ColorYellow:
 		return 2
-	case ColorBlue:
+	case ColorCyan:
 		return 3
 	}
 	return len(colorRoles)
@@ -255,15 +287,17 @@ func mixRoleIndex(role ColorRole) int {
 
 func roleFromCode(code byte) (ColorRole, bool) {
 	switch code {
-	case 'w':
-		return ColorWhite, true
-	case 'r':
-		return ColorRed, true
-	case 'b':
-		return ColorBlue, true
+	case 'c':
+		return ColorCyan, true
+	case 'm':
+		return ColorMagenta, true
 	case 'y':
 		return ColorYellow, true
-	case 'k':
+	case 'g':
+		return ColorGray, true
+	case 'w':
+		return ColorWhite, true
+	case 'b':
 		return ColorBlack, true
 	default:
 		return "", false
@@ -272,16 +306,18 @@ func roleFromCode(code byte) (ColorRole, bool) {
 
 func roleCode(role ColorRole) byte {
 	switch role {
-	case ColorWhite:
-		return 'w'
-	case ColorRed:
-		return 'r'
-	case ColorBlue:
-		return 'b'
+	case ColorCyan:
+		return 'c'
+	case ColorMagenta:
+		return 'm'
 	case ColorYellow:
 		return 'y'
+	case ColorGray:
+		return 'g'
+	case ColorWhite:
+		return 'w'
 	case ColorBlack:
-		return 'k'
+		return 'b'
 	default:
 		return '?'
 	}
@@ -289,14 +325,16 @@ func roleCode(role ColorRole) byte {
 
 func roleHex(role ColorRole) string {
 	switch role {
-	case ColorWhite:
-		return "#FFFFFF"
-	case ColorRed:
+	case ColorCyan:
+		return "#0000FF"
+	case ColorMagenta:
 		return "#FF0000"
 	case ColorYellow:
 		return "#FFFF00"
-	case ColorBlue:
-		return "#0000FF"
+	case ColorGray:
+		return "#808080"
+	case ColorWhite:
+		return "#FFFFFF"
 	case ColorBlack:
 		return "#000000"
 	default:

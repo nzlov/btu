@@ -33,9 +33,19 @@ type Request struct {
 	Source       string
 	Template     string
 	Output       string
+	Replace      bool
 	Nozzle       string
 	Palette      Palette
 	FullSpectrum bool
+	ColorMapping map[int]string
+}
+
+type OutputExistsError struct {
+	Path string
+}
+
+func (err *OutputExistsError) Error() string {
+	return fmt.Sprintf("output already exists: %s", err.Path)
 }
 
 type Progress struct {
@@ -77,8 +87,13 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	if request.Template != "" && samePath(request.Template, request.Output) {
 		return Report{}, fmt.Errorf("output must differ from template")
 	}
-	if _, err := os.Stat(request.Output); err == nil {
-		return Report{}, fmt.Errorf("output already exists: %s", request.Output)
+	if info, err := os.Stat(request.Output); err == nil {
+		if info.IsDir() {
+			return Report{}, fmt.Errorf("output path is a directory: %s", request.Output)
+		}
+		if !request.Replace {
+			return Report{}, &OutputExistsError{Path: request.Output}
+		}
 	} else if !os.IsNotExist(err) {
 		return Report{}, fmt.Errorf("check output: %w", err)
 	}
@@ -106,7 +121,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	if err != nil {
 		return Report{}, err
 	}
-	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, usage)
+	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, usage, request.ColorMapping)
 	if err != nil {
 		return Report{}, err
 	}
@@ -314,7 +329,7 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan) ma
 	merged["dithering_local_z_infill"] = localZ
 	merged["dithering_step_painted_zones_only"] = "1"
 	directMulticolor := "0"
-	if localZ == "1" && plan.hasThreeColor {
+	if localZ == "1" && plan.hasMultiColor {
 		directMulticolor = "1"
 	}
 	merged["dithering_local_z_direct_multicolor"] = directMulticolor

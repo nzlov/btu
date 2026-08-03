@@ -73,7 +73,46 @@ func TestConfirmRejectsNonInteractiveFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = Confirm(context.Background(), input, output, "Enable?")
-	if err == nil || !strings.Contains(err.Error(), "--full-spectrum") {
+	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMappingModelEditsAllRows(t *testing.T) {
+	model := mappingModel{
+		rows: []ColorMappingRow{
+			{Label: "T1", Color: "#5E43B7", Selected: 0},
+			{Label: "T2", Color: "#00AE42", Selected: 1},
+		},
+		options: []ColorOption{
+			{Label: "red", Color: "#FF0000"},
+			{Label: "purple mix", Color: "#5E43B7"},
+		},
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = updated.(mappingModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(mappingModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(mappingModel)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(mappingModel)
+
+	if !model.done || command == nil || model.rows[0].Selected != 1 || model.rows[1].Selected != 0 {
+		t.Fatalf("unexpected model: %+v, command nil = %v", model, command == nil)
+	}
+}
+
+func TestMappingModelViewShowsSourceAndTargetColors(t *testing.T) {
+	model := mappingModel{
+		rows:    []ColorMappingRow{{Label: "T5 (used)", Color: "#5E43B7", Selected: 0}},
+		options: []ColorOption{{Label: "purple mix", Color: "#5E43B7"}},
+	}
+	view := model.View()
+	for _, text := range []string{"T5 (used)", "#5E43B7", "purple mix"} {
+		if !strings.Contains(view, text) {
+			t.Fatalf("view is missing %q: %q", text, view)
+		}
 	}
 }

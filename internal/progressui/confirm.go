@@ -50,7 +50,7 @@ func (model confirmModel) View() string {
 
 func Confirm(ctx context.Context, input, output *os.File, prompt string) (bool, error) {
 	if !isTerminal(input) || !isTerminal(output) {
-		return false, fmt.Errorf("cannot ask for full-spectrum confirmation without an interactive terminal; rerun with --full-spectrum")
+		return false, fmt.Errorf("cannot ask for confirmation without an interactive terminal")
 	}
 	program := tea.NewProgram(
 		confirmModel{prompt: prompt},
