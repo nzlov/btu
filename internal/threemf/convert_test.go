@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,7 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 		"filament_type":              []string{"PLA", "PLA", "PLA"},
 		"layer_height":               "0.12",
 		"initial_layer_print_height": "0.2",
+		"nozzle_diameter":            []string{"0.4"},
 	}
 	writeTest3MF(t, sourcePath, sourceSettings, map[string]string{
 		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
@@ -128,6 +130,9 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["dithering_local_z_mode"] != "1" || settings["dithering_local_z_infill"] != "1" {
 		t.Fatalf("full spectrum local Z was not enabled: %v", settings)
 	}
+	if settings["printer_variant"] != "0.4" {
+		t.Fatalf("printer_variant = %v, want source nozzle 0.4", settings["printer_variant"])
+	}
 	wantColors := []any{"#FFFFFF", "#FF0000", "#FFFF00", "#0000FF"}
 	if got := settings["filament_colour"]; !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("filament colors = %v, want %v", got, wantColors)
@@ -143,6 +148,60 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	}
 	if got := readTestMember(t, outputPath, sliceInfoName); !strings.Contains(got, "X-BBL-Client-Type") {
 		t.Fatalf("built-in slice info was not used: %s", got)
+	}
+}
+
+func TestConvertSelectsNozzleBaseline(t *testing.T) {
+	tests := []struct {
+		name          string
+		sourceNozzle  string
+		requestNozzle string
+		wantNozzle    string
+	}{
+		{name: "from source", sourceNozzle: "0.6", wantNozzle: "0.6"},
+		{name: "request override", sourceNozzle: "0.2", requestNozzle: "0.8", wantNozzle: "0.8"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			sourcePath := filepath.Join(directory, "source.3mf")
+			outputPath := filepath.Join(directory, "output.3mf")
+			writeTest3MF(t, sourcePath, map[string]any{
+				"filament_colour": []string{"#FFFFFF"},
+				"filament_type":   []string{"PLA"},
+				"nozzle_diameter": []string{test.sourceNozzle},
+			}, map[string]string{
+				mainModelName:           `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+				modelSettingsName:       `<config><metadata key="extruder" value="1"/></config>`,
+				"Metadata/plate_1.json": `{"first_extruder":1,"nozzle_diameter":0.2}`,
+			})
+
+			_, err := Convert(context.Background(), Request{
+				Source: sourcePath,
+				Output: outputPath,
+				Nozzle: test.requestNozzle,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := readTestJSONMember(t, outputPath, projectSettingsName)
+			wantNozzles := []string{test.wantNozzle, test.wantNozzle, test.wantNozzle, test.wantNozzle}
+			if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, wantNozzles) {
+				t.Fatalf("nozzle_diameter = %v, want %v", got, wantNozzles)
+			}
+			if got := settings["printer_variant"]; got != test.wantNozzle {
+				t.Fatalf("printer_variant = %v, want %s", got, test.wantNozzle)
+			}
+			printSettingsID, ok := settings["print_settings_id"].(string)
+			if !ok || !strings.Contains(printSettingsID, "("+test.wantNozzle+" nozzle)") {
+				t.Fatalf("print_settings_id = %v", settings["print_settings_id"])
+			}
+			plate := readTestJSONMember(t, outputPath, "Metadata/plate_1.json")
+			wantPlateNozzle, _ := strconv.ParseFloat(test.wantNozzle, 64)
+			if got := plate["nozzle_diameter"]; got != wantPlateNozzle {
+				t.Fatalf("plate nozzle_diameter = %v, want %v", got, wantPlateNozzle)
+			}
+		})
 	}
 }
 

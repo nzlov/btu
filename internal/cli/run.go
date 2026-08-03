@@ -36,6 +36,23 @@ func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
 }
 
 func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command {
+	nozzleFlag := &urfavecli.StringFlag{
+		Name:     "nozzle",
+		Aliases:  []string{"n"},
+		Usage:    "use the built-in U1 baseline for `SIZE` mm instead of the source nozzle",
+		OnlyOnce: true,
+		Validator: func(value string) error {
+			_, err := threemf.ParseNozzleSize(value)
+			return err
+		},
+	}
+	templateFlag := &urfavecli.StringFlag{
+		Name:      "template",
+		Aliases:   []string{"t"},
+		Usage:     "override the built-in U1 baseline with `FILE`",
+		OnlyOnce:  true,
+		TakesFile: true,
+	}
 	return &urfavecli.Command{
 		Name:      "btu",
 		Usage:     "convert Bambu Studio 3MF materials for Snapmaker U1",
@@ -72,13 +89,8 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 				Usage:    "synthesize source colors from the four loaded filaments",
 				OnlyOnce: true,
 			},
-			&urfavecli.StringFlag{
-				Name:      "template",
-				Aliases:   []string{"t"},
-				Usage:     "override the built-in U1 baseline with `FILE`",
-				OnlyOnce:  true,
-				TakesFile: true,
-			},
+			nozzleFlag,
+			templateFlag,
 		},
 		Action: func(ctx context.Context, command *urfavecli.Command) error {
 			if command.NArg() != 1 {
@@ -98,6 +110,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc) *urfavecli.Command
 					Source:       source,
 					Template:     command.String("template"),
 					Output:       output,
+					Nozzle:       command.String("nozzle"),
 					Palette:      palette,
 					FullSpectrum: command.Bool("full-spectrum"),
 				}, func(event threemf.Progress) {

@@ -4,10 +4,10 @@
 while preserving the source model geometry. It supports both ordinary
 geometry-layered projects and Bambu native Full Spectrum mixed materials.
 
-The built-in U1 baseline supplies printer, process, and physical filament
-profiles. The source supplies geometry, layer height, material references, face
-painting, and supported mixed-material definitions. An optional U1 3MF can
-override the built-in baseline.
+The built-in U1 baselines supply printer, process, and physical filament
+profiles for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies geometry,
+layer height, material references, face painting, and supported mixed-material
+definitions. An optional U1 3MF can override the built-in baselines.
 
 ## Build
 
@@ -32,11 +32,24 @@ Options:
 | `--output FILE` | `-o FILE` | no | Override the default `SOURCE-btu.3mf` path |
 | `--colors WRBYK` | `-c WRBYK` | no | Colors loaded in slots 1 through 4 |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
+| `--nozzle SIZE` | `-n SIZE` | no | Force the 0.2, 0.4, 0.6, or 0.8 mm built-in baseline |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
 
-The built-in baseline supplies the Snapmaker U1 printer, process, nozzle,
+By default, `btu` reads `nozzle_diameter` from the source 3MF and selects the
+matching built-in U1 baseline. Override that selection when the U1 will use a
+different nozzle:
+
+```sh
+./btu \
+    --nozzle 0.6 \
+    ~/Downloads/model.3mf
+```
+
+The selected baseline supplies the Snapmaker U1 printer, process, nozzle,
 filament, and slice metadata. Pass `--template` only when a different U1 3MF
-should override that baseline.
+should override the built-in baseline. When `--template` and `--nozzle` are
+used together, the template is loaded first and the selected built-in nozzle
+profile is applied on top; unrelated template settings and metadata remain.
 
 Use four characters to describe the actual colors loaded in slots 1 through 4:
 

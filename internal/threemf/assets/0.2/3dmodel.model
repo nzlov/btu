@@ -11,6 +11,8 @@
  <metadata name="License"></metadata>
  <metadata name="ModificationDate"></metadata>
  <metadata name="Origin"></metadata>
+ <metadata name="Thumbnail_Middle">/Metadata/plate_1.png</metadata>
+ <metadata name="Thumbnail_Small">/Metadata/plate_1_small.png</metadata>
  <metadata name="Title"></metadata>
  <resources>
  </resources>

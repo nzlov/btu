@@ -33,6 +33,7 @@ type Request struct {
 	Source       string
 	Template     string
 	Output       string
+	Nozzle       string
 	Palette      Palette
 	FullSpectrum bool
 }
@@ -82,16 +83,6 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	}
 
 	progress(Progress{Current: 1, Total: 6, Stage: "Open source"})
-	baseline, err := loadU1Baseline()
-	if err != nil {
-		return Report{}, err
-	}
-	if request.Template != "" {
-		baseline, err = loadU1BaselineFrom3MF(request.Template)
-		if err != nil {
-			return Report{}, err
-		}
-	}
 	source, err := openArchive(request.Source)
 	if err != nil {
 		return Report{}, fmt.Errorf("open source: %w", err)
@@ -105,6 +96,10 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	sourceSettings, err := readJSONMap(source.files[projectSettingsName])
 	if err != nil {
 		return Report{}, fmt.Errorf("source project settings: %w", err)
+	}
+	baseline, err := loadRequestedU1Baseline(request.Template, request.Nozzle, sourceSettings)
+	if err != nil {
+		return Report{}, err
 	}
 	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum)
 	if err != nil {
