@@ -110,7 +110,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			&urfavecli.StringFlag{
 				Name:             "colors",
 				Aliases:          []string{"c"},
-				Usage:            "set preferred slot 1-4 colors using four `CMYGWB` characters",
+				Usage:            "keep CMY in slots 1-3 and set preview T4 with `ORDER` (cmyg, cmyw, or cmyb)",
 				Value:            "cmyg",
 				OnlyOnce:         true,
 				ValidateDefaults: true,
@@ -220,9 +220,79 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			for _, sourceID := range keys {
 				fmt.Fprintf(stdout, "  source T%d -> U1 T%d\n", sourceID, report.PhysicalMapping[sourceID])
 			}
+			if len(report.Plates) > 0 {
+				printPlateSteps(stdout, report.Plates, request.Palette.Slots[3])
+			}
 			return nil
 		},
 	}
+}
+
+type plateGroup struct {
+	neutral threemf.ColorRole
+	colors  string
+	plates  []threemf.PlateReport
+}
+
+func printPlateSteps(output *os.File, plates []threemf.PlateReport, initial threemf.ColorRole) {
+	groups := groupPlatesForPrinting(plates, initial)
+	changes := 0
+	current := initial
+	for _, group := range groups {
+		if group.neutral != current {
+			changes++
+			current = group.neutral
+		}
+	}
+
+	label := "changes"
+	if changes == 1 {
+		label = "change"
+	}
+	fmt.Fprintf(output, "Printing steps (recommended order, %d T4 %s):\n", changes, label)
+	current = initial
+	for _, group := range groups {
+		if group.neutral == current {
+			fmt.Fprintf(output, "  keep T4 %s (%s): ", group.neutral, group.colors)
+		} else {
+			fmt.Fprintf(output, "  replace T4 %s -> %s (%s): ", current, group.neutral, group.colors)
+			current = group.neutral
+		}
+		for index, plate := range group.plates {
+			if index > 0 {
+				fmt.Fprint(output, ", ")
+			}
+			fmt.Fprintf(output, "plate %d", plate.Number)
+			if plate.Name != "" {
+				fmt.Fprintf(output, " - %s", plate.Name)
+			}
+		}
+		fmt.Fprintln(output)
+	}
+}
+
+func groupPlatesForPrinting(plates []threemf.PlateReport, initial threemf.ColorRole) []plateGroup {
+	groups := make([]plateGroup, 0, 3)
+	indexes := make(map[threemf.ColorRole]int, 3)
+	for _, plate := range plates {
+		index, found := indexes[plate.Neutral]
+		if !found {
+			index = len(groups)
+			indexes[plate.Neutral] = index
+			groups = append(groups, plateGroup{neutral: plate.Neutral, colors: plate.Colors})
+		}
+		groups[index].plates = append(groups[index].plates, plate)
+	}
+
+	initialIndex, found := indexes[initial]
+	if !found || initialIndex == 0 {
+		return groups
+	}
+	optimized := make([]plateGroup, 0, len(groups))
+	optimized = append(optimized, groups[initialIndex])
+	optimized = append(optimized, groups[:initialIndex]...)
+	optimized = append(optimized, groups[initialIndex+1:]...)
+	return optimized
 }
 
 func colorMappingRows(mappings []threemf.ColorMapping, keepMixed bool) ([]progressui.ColorMappingRow, []progressui.ColorOption) {

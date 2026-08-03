@@ -26,6 +26,28 @@ func (usage materialUsage) add(material int, weight float64) {
 	usage[material] += weight
 }
 
+type plateMaterialUsage struct {
+	ID        int
+	Name      string
+	Materials materialUsage
+}
+
+type projectMaterialUsage struct {
+	Total  materialUsage
+	Plates []plateMaterialUsage
+}
+
+func (usage *projectMaterialUsage) add(material int, weight float64, plateIndexes []int) {
+	if len(plateIndexes) == 0 {
+		usage.Total.add(material, weight)
+		return
+	}
+	for _, plateIndex := range plateIndexes {
+		usage.Total.add(material, weight)
+		usage.Plates[plateIndex].Materials.add(material, weight)
+	}
+}
+
 type settingsMetadataXML struct {
 	Key   string `xml:"key,attr"`
 	Value string `xml:"value,attr"`
@@ -44,6 +66,16 @@ type settingsObjectXML struct {
 
 type settingsConfigXML struct {
 	Objects []settingsObjectXML `xml:"object"`
+	Plates  []settingsPlateXML  `xml:"plate"`
+}
+
+type settingsPlateXML struct {
+	Metadata  []settingsMetadataXML      `xml:"metadata"`
+	Instances []settingsModelInstanceXML `xml:"model_instance"`
+}
+
+type settingsModelInstanceXML struct {
+	Metadata []settingsMetadataXML `xml:"metadata"`
 }
 
 type componentXML struct {
@@ -68,8 +100,9 @@ type meshKey struct {
 }
 
 type meshAssignment struct {
-	material  int
-	transform transform3D
+	material     int
+	transform    transform3D
+	plateIndexes []int
 }
 
 type transform3D [12]float64
@@ -111,20 +144,20 @@ func (transform transform3D) apply(point point3D) point3D {
 	}
 }
 
-func analyzeMaterialUsage(source archive) (materialUsage, error) {
+func analyzeMaterialUsage(source archive) (projectMaterialUsage, error) {
 	modelSettings, err := readMember(source.files[modelSettingsName])
 	if err != nil {
-		return nil, fmt.Errorf("read model settings: %w", err)
+		return projectMaterialUsage{}, fmt.Errorf("read model settings: %w", err)
 	}
 	mainModel, err := readMember(source.files[mainModelName])
 	if err != nil {
-		return nil, fmt.Errorf("read main model: %w", err)
+		return projectMaterialUsage{}, fmt.Errorf("read main model: %w", err)
 	}
 
-	usage := make(materialUsage)
-	assignments, err := modelAssignments(modelSettings, mainModel, usage)
+	usage := projectMaterialUsage{Total: make(materialUsage)}
+	assignments, err := modelAssignments(modelSettings, mainModel, &usage)
 	if err != nil {
-		return nil, err
+		return projectMaterialUsage{}, err
 	}
 	for name, file := range source.files {
 		if !strings.HasSuffix(name, ".model") || !hasAssignmentsForPath(assignments, name) {
@@ -132,16 +165,16 @@ func analyzeMaterialUsage(source archive) (materialUsage, error) {
 		}
 		data, err := readMember(file)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", name, err)
+			return projectMaterialUsage{}, fmt.Errorf("read %s: %w", name, err)
 		}
-		if err := measureModelUsage(data, name, assignments, usage); err != nil {
-			return nil, fmt.Errorf("analyze %s: %w", name, err)
+		if err := measureModelUsage(data, name, assignments, &usage); err != nil {
+			return projectMaterialUsage{}, fmt.Errorf("analyze %s: %w", name, err)
 		}
 	}
 	return usage, nil
 }
 
-func modelAssignments(modelSettings, mainModel []byte, usage materialUsage) (map[meshKey][]meshAssignment, error) {
+func modelAssignments(modelSettings, mainModel []byte, usage *projectMaterialUsage) (map[meshKey][]meshAssignment, error) {
 	var settings settingsConfigXML
 	if err := xml.Unmarshal(modelSettings, &settings); err != nil {
 		return nil, fmt.Errorf("parse model settings: %w", err)
@@ -154,6 +187,7 @@ func modelAssignments(modelSettings, mainModel []byte, usage materialUsage) (map
 	for _, object := range model.Objects {
 		resources[object.ID] = object
 	}
+	plateIndexes := buildPlateUsage(settings, usage)
 
 	assignments := make(map[meshKey][]meshAssignment)
 	for _, object := range settings.Objects {
@@ -161,18 +195,22 @@ func modelAssignments(modelSettings, mainModel []byte, usage materialUsage) (map
 		if defaultMaterial == 0 {
 			defaultMaterial = 1
 		}
-		usage.add(defaultMaterial, 0)
+		objectPlates, printable := plateIndexes[object.ID]
+		usage.add(defaultMaterial, 0, objectPlates)
 		resource, found := resources[object.ID]
 		if !found {
 			for _, part := range object.Parts {
-				usage.add(inheritedMaterial(part.Metadata, defaultMaterial), 0)
+				usage.add(inheritedMaterial(part.Metadata, defaultMaterial), 0, objectPlates)
 			}
+			continue
+		}
+		if !printable {
 			continue
 		}
 		if len(resource.Components) == 0 {
 			assignments[meshKey{path: mainModelName, objectID: object.ID}] = append(
 				assignments[meshKey{path: mainModelName, objectID: object.ID}],
-				meshAssignment{material: defaultMaterial, transform: identityTransform()},
+				meshAssignment{material: defaultMaterial, transform: identityTransform(), plateIndexes: objectPlates},
 			)
 			continue
 		}
@@ -187,16 +225,56 @@ func modelAssignments(modelSettings, mainModel []byte, usage materialUsage) (map
 			if part, ok := parts[component.ObjectID]; ok {
 				material = inheritedMaterial(part.Metadata, defaultMaterial)
 			}
-			usage.add(material, 0)
+			usage.add(material, 0, objectPlates)
 			transform, err := parseTransform(component.Transform)
 			if err != nil {
 				return nil, fmt.Errorf("object %d component %d: %w", object.ID, component.ObjectID, err)
 			}
 			key := meshKey{path: normalizeModelPath(component.Path), objectID: component.ObjectID}
-			assignments[key] = append(assignments[key], meshAssignment{material: material, transform: transform})
+			assignments[key] = append(assignments[key], meshAssignment{
+				material: material, transform: transform, plateIndexes: objectPlates,
+			})
 		}
 	}
 	return assignments, nil
+}
+
+func buildPlateUsage(settings settingsConfigXML, usage *projectMaterialUsage) map[int][]int {
+	result := make(map[int][]int)
+	if len(settings.Plates) == 0 {
+		usage.Plates = []plateMaterialUsage{{ID: 1, Materials: make(materialUsage)}}
+		for _, object := range settings.Objects {
+			result[object.ID] = []int{0}
+		}
+		return result
+	}
+
+	usage.Plates = make([]plateMaterialUsage, len(settings.Plates))
+	for index, plate := range settings.Plates {
+		plateID, _ := strconv.Atoi(metadataValue(plate.Metadata, "plater_id"))
+		if plateID <= 0 {
+			plateID = index + 1
+		}
+		name := metadataValue(plate.Metadata, "plater_name")
+		for _, instance := range plate.Instances {
+			objectID, _ := strconv.Atoi(metadataValue(instance.Metadata, "object_id"))
+			if objectID <= 0 {
+				continue
+			}
+			result[objectID] = append(result[objectID], index)
+		}
+		usage.Plates[index] = plateMaterialUsage{ID: plateID, Name: name, Materials: make(materialUsage)}
+	}
+	return result
+}
+
+func metadataValue(metadata []settingsMetadataXML, key string) string {
+	for _, item := range metadata {
+		if item.Key == key {
+			return item.Value
+		}
+	}
+	return ""
 }
 
 func metadataMaterial(metadata []settingsMetadataXML) int {
@@ -231,7 +309,7 @@ func hasAssignmentsForPath(assignments map[meshKey][]meshAssignment, name string
 	return false
 }
 
-func measureModelUsage(data []byte, name string, assignments map[meshKey][]meshAssignment, usage materialUsage) error {
+func measureModelUsage(data []byte, name string, assignments map[meshKey][]meshAssignment, usage *projectMaterialUsage) error {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	objectID := 0
 	var vertices []point3D
@@ -288,7 +366,7 @@ func measureModelUsage(data []byte, name string, assignments map[meshKey][]meshA
 						if state == 0 {
 							state = assignment.material
 						}
-						usage.add(state, share)
+						usage.add(state, share, assignment.plateIndexes)
 					}
 				}
 			}

@@ -13,22 +13,22 @@ func TestDefaultPaletteIsCMYG(t *testing.T) {
 }
 
 func TestParsePaletteOrderWithBlack(t *testing.T) {
-	palette, err := ParsePalette("cbmy")
+	palette, err := ParsePalette("cmyb")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if palette.slot(ColorCyan) != 1 || palette.slot(ColorBlack) != 2 || palette.slot(ColorMagenta) != 3 || palette.slot(ColorYellow) != 4 {
+	if palette.slot(ColorCyan) != 1 || palette.slot(ColorMagenta) != 2 || palette.slot(ColorYellow) != 3 || palette.slot(ColorBlack) != 4 {
 		t.Fatalf("unexpected slots: %v", palette.Slots)
 	}
-	wantColors := []string{"#0000FF", "#000000", "#FF0000", "#FFFF00"}
+	wantColors := []string{"#0000FF", "#FF0000", "#FFFF00", "#000000"}
 	if got := palette.outputColors(); !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("output colors = %v, want %v", got, wantColors)
 	}
 }
 
-func TestParsePaletteRejectsDuplicateRole(t *testing.T) {
+func TestParsePaletteRejectsMovingCMY(t *testing.T) {
 	if _, err := ParsePalette("wmmb"); err == nil {
-		t.Fatal("expected duplicate role error")
+		t.Fatal("expected fixed CMY order error")
 	}
 }
 
@@ -44,7 +44,7 @@ func TestDecomposeGreenAsYellowAndCyan(t *testing.T) {
 }
 
 func TestDecomposeBlackUsesBlackSlot(t *testing.T) {
-	palette, err := ParsePalette("bmyc")
+	palette, err := ParsePalette("cmyb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +69,9 @@ func TestDarkMagentaIsNotClassifiedAsGray(t *testing.T) {
 	}
 }
 
-func TestGrayCanUseWhiteAndBlack(t *testing.T) {
-	palette, err := ParsePalette("mywb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parts, ok := colorParts(roleRGB(ColorGray), palette)
-	want := []colorComponent{{role: ColorWhite, weight: 1}, {role: ColorBlack, weight: 1}}
+func TestGrayUsesDynamicNeutralSlot(t *testing.T) {
+	parts, ok := colorParts(roleRGB(ColorGray), DefaultPalette())
+	want := []colorComponent{{role: ColorGray, weight: 1}}
 	if !ok || !reflect.DeepEqual(parts, want) {
 		t.Fatalf("gray parts = %+v, ok = %v, want %+v", parts, ok, want)
 	}

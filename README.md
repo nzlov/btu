@@ -34,7 +34,7 @@ Options:
 | --- | --- | --- | --- |
 | `--output FILE` | `-o FILE` | no | Override the default `SOURCE-btu.3mf` path |
 | `--replace` | `-r` | no | Replace an existing output without prompting |
-| `--colors CMYGWB` | `-c CMYGWB` | no | Preferred base-color order for slots 1 through 4 |
+| `--colors ORDER` | `-c ORDER` | no | Set the project-preview palette to `cmyg`, `cmyw`, or `cmyb` |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
 | `--nozzle DIAMETER_MM` | `-n DIAMETER_MM` | no | Force a built-in baseline; accepts `0.2`, `0.4`, `0.6`, or `0.8` (millimeters) |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
@@ -55,7 +55,8 @@ should override the built-in baseline. When `--template` and `--nozzle` are
 used together, the template is loaded first and the selected built-in nozzle
 profile is applied on top; unrelated template settings and metadata remain.
 
-Use four characters to describe the preferred colors in slots 1 through 4:
+Slots 1 through 3 are always cyan, magenta, and yellow. Slot 4 is the neutral
+slot and can contain gray, white, or black:
 
 - `c`: cyan/blue
 - `m`: magenta/red
@@ -64,33 +65,53 @@ Use four characters to describe the preferred colors in slots 1 through 4:
 - `w`: white
 - `b`: black
 
-The default sequence is cyan, magenta, yellow, and gray: `cmyg`. Each color can
-appear at most once. For example, black, magenta, yellow, and cyan in slots 1
-through 4 is `bmyc`:
+The default project-preview sequence is `cmyg`. Use `cmyw` or `cmyb` only when
+white or black should be the neutral shown by Orca for the whole project:
 
 ```sh
 ./btu \
     --output ~/Downloads/model-for-u1.3mf \
-    --colors bmyc \
+    --colors cmyb \
     ~/Downloads/model.3mf
 ```
 
-For ordinary projects, `btu` inspects every declared material color, including
-colors that currently have no model faces. It recognizes cyan, magenta, yellow,
-gray, white, and black, then chooses four physical filaments. Every declared
-color constrains that choice and receives either its corresponding physical slot
-or a generated virtual mixture. CMYG remains the preferred order when candidate
-palettes reproduce the declared colors equally well. The final order is printed
-as `U1 colors`; load those reported colors before printing.
+For ordinary multi-plate projects, `btu` reads each plate's `plater_id`,
+`plater_name`, object membership, and actual material usage. It keeps CMY fixed
+and independently chooses gray, white, or black for T4 on each non-empty plate.
+The output remains one multi-plate 3MF with one global material mapping. The CLI
+groups plates that use the same T4 filament and prints a recommended order,
+using each plate's sequence number and plate name. The current preview T4 group
+is printed first, and T4 is replaced only between groups, minimizing filament
+changes without modifying the plate order stored in the 3MF.
 
-The converter mixes only when a mapped color cannot use a physical slot. It
-searches one- to four-component recipes with integer percentages,
+Orca cannot represent gray, white, and black as separate one-component virtual
+materials backed by the same physical slot. The project therefore keeps the
+`--colors` neutral for preview (`cmyg` by default), while the printed result uses
+the T4 filament named in the per-plate steps. An empty plate name remains empty;
+`btu` does not substitute a model name.
+
+The converter maps the neutral selected for a plate directly to T4 and mixes
+the other mapped colors when needed. It searches one- to four-component recipes
+with integer percentages against that plate's actual `cmyg`, `cmyw`, or `cmyb`
+filaments,
 scores their preview colors with the same MIT-licensed FilamentMixer model used
 by FullSpectrum, creates the required virtual materials, remaps model and
-face-paint references, and enables U1 Local-Z mixed-color printing. Black can be
-mixed from CMY when all primary slots are needed; gray can be mixed from white
-and black when those two slots are the better four-color choice. Preview colors
-remain estimates because physical filament opacity and transmission vary.
+face-paint references, and enables U1 Local-Z mixed-color printing. If the same
+source material is printed on plates that choose different T4 colors, its shared
+recipe uses CMY only so that one material ID remains valid across the project.
+Declared but unused colors retain deterministic mappings without influencing a
+plate's T4 choice. Preview colors remain estimates because physical filament
+opacity and transmission vary.
+
+For example, a four-plate project may report:
+
+```text
+U1 colors: cmyg
+Printing steps (recommended order, 2 T4 changes):
+  keep T4 gray (cmyg): plate 4 - nose
+  replace T4 gray -> white (cmyw): plate 1 - eyes, plate 3 - ears
+  replace T4 white -> black (cmyb): plate 2 - body
+```
 
 ```sh
 ./btu \

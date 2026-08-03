@@ -1,7 +1,6 @@
 package threemf
 
 import (
-	"fmt"
 	"math"
 	"sync"
 
@@ -15,78 +14,12 @@ type colorRecipe struct {
 	error      float64
 }
 
-type paletteScore struct {
-	maxError   float64
-	totalError float64
-	usedError  float64
-	mixCost    float64
-}
-
 type cachedColorRecipe struct {
 	recipe colorRecipe
 	ok     bool
 }
 
 var colorRecipeCache sync.Map
-
-func selectColorRecipes(colors [][3]int, preferred Palette, usage materialUsage) (Palette, []colorRecipe, error) {
-	bestScore := paletteScore{
-		maxError:   math.Inf(1),
-		totalError: math.Inf(1),
-		usedError:  math.Inf(1),
-		mixCost:    math.Inf(1),
-	}
-	var bestPalette Palette
-	var bestRecipes []colorRecipe
-	for _, candidate := range paletteCandidates(preferred) {
-		recipes := make([]colorRecipe, len(colors))
-		score := paletteScore{}
-		valid := true
-		for index, color := range colors {
-			recipe, ok := bestColorRecipe(color, candidate)
-			if !ok {
-				valid = false
-				break
-			}
-			recipes[index] = recipe
-			score.maxError = max(score.maxError, recipe.error)
-			score.totalError += recipe.error
-			if weight := usage[index+1]; weight > 0 {
-				score.usedError += recipe.error * (1 + math.Log1p(weight))
-				score.mixCost += float64(len(recipe.components)-1) * (1 + math.Log1p(weight))
-			} else {
-				score.mixCost += float64(len(recipe.components) - 1)
-			}
-		}
-		if valid && betterPaletteScore(score, bestScore) {
-			bestPalette = candidate
-			bestRecipes = recipes
-			bestScore = score
-		}
-	}
-	if bestRecipes == nil {
-		return Palette{}, nil, fmt.Errorf("mapped colors cannot be represented by any four-color palette from cmygwb")
-	}
-	return bestPalette, bestRecipes, nil
-}
-
-func betterPaletteScore(candidate, current paletteScore) bool {
-	const tolerance = 1e-9
-	for _, values := range [][2]float64{
-		{candidate.maxError, current.maxError},
-		{candidate.totalError, current.totalError},
-		{candidate.usedError, current.usedError},
-		{candidate.mixCost, current.mixCost},
-	} {
-		if values[0] < values[1]-tolerance {
-			return true
-		}
-		if values[0] > values[1]+tolerance {
-			return false
-		}
-	}
-	return false
-}
 
 func bestColorRecipe(target [3]int, palette Palette) (colorRecipe, bool) {
 	key := palette.String() + "/" + canonicalColor(target)
@@ -104,17 +37,21 @@ func calculateBestColorRecipe(target [3]int, palette Palette) (colorRecipe, bool
 		if slot := palette.slot(role); slot > 0 {
 			return directColorRecipe(target, role, slot), true
 		}
-		switch role {
-		case ColorBlack:
-			return searchRequiredRecipe(target, palette, []ColorRole{ColorCyan, ColorMagenta, ColorYellow})
-		case ColorGray:
-			return searchRequiredRecipe(target, palette, []ColorRole{ColorWhite, ColorBlack})
-		default:
-			return colorRecipe{}, false
+	}
+	return searchColorRecipe(target, palette, []int{1, 2, 3, 4})
+}
+
+func bestCMYRecipe(target [3]int) (colorRecipe, bool) {
+	palette := DefaultPalette()
+	if role, base := baseColorRole(target); base {
+		if slot := palette.slot(role); slot > 0 && slot <= 3 {
+			return directColorRecipe(target, role, slot), true
 		}
 	}
+	return searchColorRecipe(target, palette, []int{1, 2, 3})
+}
 
-	slots := []int{1, 2, 3, 4}
+func searchColorRecipe(target [3]int, palette Palette, slots []int) (colorRecipe, bool) {
 	best := colorRecipe{error: math.Inf(1)}
 	for componentCount := 2; componentCount <= len(slots); componentCount++ {
 		for _, components := range componentCombinations(slots, componentCount) {
@@ -135,19 +72,6 @@ func directColorRecipe(target [3]int, role ColorRole, slot int) colorRecipe {
 		preview:    preview,
 		error:      recipeDistance(target, preview),
 	}
-}
-
-func searchRequiredRecipe(target [3]int, palette Palette, roles []ColorRole) (colorRecipe, bool) {
-	components := make([]int, len(roles))
-	for index, role := range roles {
-		components[index] = palette.slot(role)
-		if components[index] == 0 {
-			return colorRecipe{}, false
-		}
-	}
-	sortInts(components)
-	recipe := searchRecipeWeights(target, palette, components)
-	return recipe, !math.IsInf(recipe.error, 1)
 }
 
 func searchRecipeWeights(target [3]int, palette Palette, components []int) colorRecipe {
@@ -239,12 +163,4 @@ func componentCombinations(slots []int, count int) [][]int {
 	}
 	visit(0)
 	return result
-}
-
-func sortInts(values []int) {
-	for index := 1; index < len(values); index++ {
-		for cursor := index; cursor > 0 && values[cursor] < values[cursor-1]; cursor-- {
-			values[cursor], values[cursor-1] = values[cursor-1], values[cursor]
-		}
-	}
 }

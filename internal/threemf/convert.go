@@ -63,6 +63,7 @@ type Report struct {
 	Colors          string
 	PhysicalMapping map[int]int
 	VirtualMixes    int
+	Plates          []PlateReport
 }
 
 type archive struct {
@@ -182,6 +183,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		Colors:          plan.palette.String(),
 		PhysicalMapping: plan.physicalMapping,
 		VirtualMixes:    plan.virtualMixes,
+		Plates:          plan.plates,
 	}, nil
 }
 

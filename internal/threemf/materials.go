@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -18,6 +17,14 @@ type materialPlan struct {
 	hasMultiColor   bool
 	forceLocalZ     bool
 	palette         Palette
+	plates          []PlateReport
+}
+
+type PlateReport struct {
+	Number  int
+	Name    string
+	Colors  string
+	Neutral ColorRole
 }
 
 type ColorMapping struct {
@@ -41,7 +48,7 @@ func (err *FullSpectrumRequiredError) Error() string {
 	return fmt.Sprintf("source uses %d colors; full-spectrum mixing is required", err.ColorCount)
 }
 
-func planMaterials(source, template map[string]any, palette Palette, fullSpectrum bool, usage materialUsage, targets map[int]string) (materialPlan, error) {
+func planMaterials(source, template map[string]any, palette Palette, fullSpectrum bool, usage projectMaterialUsage, targets map[int]string) (materialPlan, error) {
 	for _, key := range []string{"filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"} {
 		if hasEnabledValue(source[key]) {
 			return materialPlan{}, fmt.Errorf("%s is not representable by U1", key)
@@ -57,8 +64,8 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 	}
 	if firstMixed < 0 {
 		colors := stringSlice(source["filament_colour"])
-		usage = normalizedPhysicalUsage(usage, len(colors))
-		mappings, nonBaseCount, err := inspectColorMappings(colors, usage)
+		usage = normalizeProjectMaterialUsage(usage, len(colors))
+		mappings, nonBaseCount, err := inspectColorMappings(colors, usage.Total)
 		if err != nil {
 			return materialPlan{}, err
 		}
@@ -146,10 +153,11 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 		virtualMixes:    len(definitions),
 		hasMultiColor:   hasMultiColor,
 		palette:         palette,
+		plates:          reportsForNeutral(usage, palette.neutralRole()),
 	}, nil
 }
 
-func planMappedMaterials(source, template map[string]any, palette Palette, usage materialUsage, targets map[int]string) (materialPlan, error) {
+func planMappedMaterials(source, template map[string]any, palette Palette, usage projectMaterialUsage, targets map[int]string) (materialPlan, error) {
 	colors := stringSlice(source["filament_colour"])
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
@@ -157,12 +165,15 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 	if len(stringSlice(template["filament_colour"])) != len(palette.Slots) {
 		return materialPlan{}, fmt.Errorf("U1 template must have exactly four physical material slots")
 	}
-	usage = normalizedPhysicalUsage(usage, len(colors))
 	targetColors, err := resolveTargetColors(colors, targets)
 	if err != nil {
 		return materialPlan{}, err
 	}
-	palette, recipes, err := selectColorRecipes(targetColors, palette, usage)
+	plans, err := selectPlatePlans(targetColors, usage, palette)
+	if err != nil {
+		return materialPlan{}, err
+	}
+	recipes, err := selectProjectRecipes(targetColors, usage, plans, palette)
 	if err != nil {
 		return materialPlan{}, err
 	}
@@ -209,7 +220,27 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		hasMultiColor:   hasMultiColor,
 		forceLocalZ:     len(definitions) > 0,
 		palette:         palette,
+		plates:          reportsFromPlatePlans(plans),
 	}, nil
+}
+
+func reportsForNeutral(usage projectMaterialUsage, neutral ColorRole) []PlateReport {
+	plans := make([]platePlan, 0, len(usage.Plates))
+	for _, plate := range usage.Plates {
+		plans = append(plans, platePlan{id: plate.ID, name: plate.Name, neutral: neutral})
+	}
+	return reportsFromPlatePlans(plans)
+}
+
+func reportsFromPlatePlans(plans []platePlan) []PlateReport {
+	reports := make([]PlateReport, len(plans))
+	for index, plan := range plans {
+		reports[index] = PlateReport{
+			Number: plan.id, Name: plan.name, Neutral: plan.neutral,
+			Colors: paletteWithNeutral(plan.neutral).String(),
+		}
+	}
+	return reports
 }
 
 func inspectColorMappings(colors []string, usage materialUsage) ([]ColorMapping, int, error) {
@@ -283,77 +314,17 @@ func resolveTargetColors(colors []string, targets map[int]string) ([][3]int, err
 }
 
 func paletteCandidates(preferred Palette) []Palette {
-	result := make([]Palette, 0, 15)
-	for first := 0; first < len(colorRoles)-3; first++ {
-		for second := first + 1; second < len(colorRoles)-2; second++ {
-			for third := second + 1; third < len(colorRoles)-1; third++ {
-				for fourth := third + 1; fourth < len(colorRoles); fourth++ {
-					result = append(result, arrangePalette(preferred, [4]ColorRole{
-						colorRoles[first], colorRoles[second], colorRoles[third], colorRoles[fourth],
-					}))
-				}
-			}
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		leftChanges, leftPenalty := palettePreference(result[i], preferred)
-		rightChanges, rightPenalty := palettePreference(result[j], preferred)
-		if leftChanges != rightChanges {
-			return leftChanges < rightChanges
-		}
-		if leftPenalty != rightPenalty {
-			return leftPenalty < rightPenalty
-		}
-		return result[i].String() < result[j].String()
-	})
-	return result
-}
-
-func arrangePalette(preferred Palette, roles [4]ColorRole) Palette {
-	selected := make(map[ColorRole]bool, len(roles))
+	roles := []ColorRole{preferred.neutralRole(), ColorGray, ColorWhite, ColorBlack}
+	result := make([]Palette, 0, 3)
+	seen := make(map[ColorRole]bool, 3)
 	for _, role := range roles {
-		selected[role] = true
-	}
-	result := Palette{}
-	for index, role := range preferred.Slots {
-		if selected[role] {
-			result.Slots[index] = role
-			delete(selected, role)
+		if seen[role] {
+			continue
 		}
-	}
-	missing := make([]ColorRole, 0, len(selected))
-	for _, role := range colorRoles {
-		if selected[role] {
-			missing = append(missing, role)
-		}
-	}
-	missingIndex := 0
-	for index, role := range result.Slots {
-		if role == "" {
-			result.Slots[index] = missing[missingIndex]
-			missingIndex++
-		}
+		seen[role] = true
+		result = append(result, Palette{Slots: [4]ColorRole{ColorCyan, ColorMagenta, ColorYellow, role}})
 	}
 	return result
-}
-
-func palettePreference(candidate, preferred Palette) (int, int) {
-	changes := 0
-	for _, role := range preferred.Slots {
-		if candidate.slot(role) == 0 {
-			changes++
-		}
-	}
-	primaryPenalty := 0
-	for _, role := range []ColorRole{ColorCyan, ColorMagenta, ColorYellow} {
-		if candidate.slot(role) == 0 {
-			primaryPenalty += 4
-		}
-	}
-	if candidate.slot(ColorGray) == 0 {
-		primaryPenalty++
-	}
-	return changes, primaryPenalty
 }
 
 func colorParts(color [3]int, palette Palette) ([]colorComponent, bool) {

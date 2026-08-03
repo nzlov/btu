@@ -29,20 +29,12 @@ func DefaultPalette() Palette {
 
 func ParsePalette(order string) (Palette, error) {
 	order = strings.ToLower(strings.TrimSpace(order))
-	if len(order) != 4 {
-		return Palette{}, fmt.Errorf("colors requires exactly four characters from cmygwb")
+	if len(order) != 4 || order[:3] != "cmy" || !strings.ContainsRune("gwb", rune(order[3])) {
+		return Palette{}, fmt.Errorf("colors must be cmyg, cmyw, or cmyb; slots 1-3 are fixed to c, m, and y")
 	}
 	palette := Palette{}
-	seen := make(map[ColorRole]bool, len(palette.Slots))
 	for index := range order {
-		role, ok := roleFromCode(order[index])
-		if !ok {
-			return Palette{}, fmt.Errorf("unsupported color code %q; use c, m, y, g, w, or b", order[index:index+1])
-		}
-		if seen[role] {
-			return Palette{}, fmt.Errorf("color code %q appears more than once", order[index:index+1])
-		}
-		seen[role] = true
+		role, _ := roleFromCode(order[index])
 		palette.Slots[index] = role
 	}
 	return palette, nil
@@ -59,24 +51,15 @@ func (palette Palette) normalized() (Palette, error) {
 	if allEmpty {
 		return DefaultPalette(), nil
 	}
-	seen := make(map[ColorRole]bool, len(colorRoles))
-	for _, role := range palette.Slots {
-		if !isColorRole(role) || seen[role] {
-			return Palette{}, fmt.Errorf("palette must contain four different colors from cmygwb")
-		}
-		seen[role] = true
+	if palette.Slots[0] != ColorCyan || palette.Slots[1] != ColorMagenta || palette.Slots[2] != ColorYellow ||
+		(palette.Slots[3] != ColorGray && palette.Slots[3] != ColorWhite && palette.Slots[3] != ColorBlack) {
+		return Palette{}, fmt.Errorf("palette must keep c, m, and y in slots 1-3 and use g, w, or b in slot 4")
 	}
 	return palette, nil
 }
 
 func (palette Palette) neutralRole() ColorRole {
-	if palette.slot(ColorGray) > 0 {
-		return ColorGray
-	}
-	if palette.slot(ColorWhite) > 0 {
-		return ColorWhite
-	}
-	return ColorBlack
+	return palette.Slots[3]
 }
 
 func (palette Palette) slot(role ColorRole) int {

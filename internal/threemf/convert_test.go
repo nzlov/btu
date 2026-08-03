@@ -189,7 +189,7 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_variant"] != "0.4" {
 		t.Fatalf("printer_variant = %v, want source nozzle 0.4", settings["printer_variant"])
 	}
-	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#FFFFFF"}
+	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#808080"}
 	if got := settings["filament_colour"]; !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("filament colors = %v, want %v", got, wantColors)
 	}
