@@ -2,7 +2,9 @@
 
 `btu` converts Bambu Studio 3MF material assignments into a Snapmaker U1 3MF
 while preserving the source model geometry. It supports both ordinary
-geometry-layered projects and Bambu native Full Spectrum mixed materials.
+geometry-layered projects and Bambu native Full Spectrum mixed materials. For
+ordinary projects, colors that cannot use a physical filament slot are
+automatically converted into U1 Full Spectrum mixtures.
 
 The built-in U1 baselines supply printer, process, and physical filament
 profiles for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies geometry,
