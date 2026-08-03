@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/nzlov/btu/internal/progressui"
 	"github.com/nzlov/btu/internal/threemf"
 )
 
@@ -89,7 +87,7 @@ func TestFlagsReachConversionRequest(t *testing.T) {
 func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithPrompts(
+	status := runWithConfirm(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -109,9 +107,6 @@ func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 			}
 			return true, nil
 		},
-		func(context.Context, *os.File, []progressui.ColorMappingRow, []progressui.ColorOption) ([]string, error) {
-			return nil, errors.New("color mapping was not expected")
-		},
 	)
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
@@ -121,7 +116,7 @@ func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 func TestRejectingExistingOutputStopsConversion(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithPrompts(
+	status := runWithConfirm(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -130,9 +125,6 @@ func TestRejectingExistingOutputStopsConversion(t *testing.T) {
 			return threemf.Report{}, &threemf.OutputExistsError{Path: request.Output}
 		},
 		func(context.Context, *os.File, string) (bool, error) { return false, nil },
-		func(context.Context, *os.File, []progressui.ColorMappingRow, []progressui.ColorOption) ([]string, error) {
-			return nil, errors.New("color mapping was not expected")
-		},
 	)
 	if status != 1 || calls != 1 {
 		t.Fatalf("status = %d, calls = %d", status, calls)
@@ -142,11 +134,11 @@ func TestRejectingExistingOutputStopsConversion(t *testing.T) {
 	}
 }
 
-func TestReplacementConfirmationCanContinueToColorMapping(t *testing.T) {
+func TestReplacementConfirmationCanContinueToFullSpectrumChoice(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
 	confirmations := 0
-	status := runWithPrompts(
+	status := runWithConfirm(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -162,12 +154,9 @@ func TestReplacementConfirmationCanContinueToColorMapping(t *testing.T) {
 				return threemf.Report{}, &threemf.FullSpectrumRequiredError{
 					ColorCount:   1,
 					NonBaseCount: 1,
-					Mappings: []threemf.ColorMapping{
-						{MaterialIDs: []int{1}, Color: "#5E43B7", Used: true, Suggested: threemf.ColorCyan},
-					},
 				}
 			default:
-				if !request.Replace || !request.FullSpectrum || request.ColorMapping[1] != "#5E43B7" {
+				if !request.Replace || !request.FullSpectrum || request.PreserveMaterialSlots {
 					t.Fatalf("final request = %+v", request)
 				}
 				return threemf.Report{Mode: "full-spectrum", Output: request.Output}, nil
@@ -176,9 +165,6 @@ func TestReplacementConfirmationCanContinueToColorMapping(t *testing.T) {
 		func(context.Context, *os.File, string) (bool, error) {
 			confirmations++
 			return true, nil
-		},
-		func(_ context.Context, _ *os.File, rows []progressui.ColorMappingRow, options []progressui.ColorOption) ([]string, error) {
-			return []string{options[rows[0].Selected].Color}, nil
 		},
 	)
 	if status != 0 || calls != 3 || confirmations != 2 {
@@ -275,23 +261,16 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
 	confirmed := false
-	status := runWithPrompts([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+	status := runWithConfirm([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		calls++
 		if calls == 1 {
 			return threemf.Report{}, &threemf.FullSpectrumRequiredError{
 				ColorCount:   2,
 				NonBaseCount: 1,
-				Mappings: []threemf.ColorMapping{
-					{MaterialIDs: []int{1}, Color: "#FF0000", Used: true, Base: true, Suggested: threemf.ColorMagenta},
-					{MaterialIDs: []int{2, 3}, Color: "#5E43B7", Used: true, Suggested: threemf.ColorCyan},
-				},
 			}
 		}
-		if !request.FullSpectrum {
-			t.Fatal("retry did not enable full spectrum")
-		}
-		if request.ColorMapping[1] != "#FF0000" || request.ColorMapping[2] != "#5E43B7" || request.ColorMapping[3] != "#5E43B7" {
-			t.Fatalf("color mapping = %v", request.ColorMapping)
+		if !request.FullSpectrum || request.PreserveMaterialSlots {
+			t.Fatalf("retry request = %+v", request)
 		}
 		return threemf.Report{Mode: "full-spectrum", Output: request.Output, Colors: "cmyg"}, nil
 	}, func(_ context.Context, _ *os.File, prompt string) (bool, error) {
@@ -300,12 +279,6 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 			t.Fatalf("prompt = %q", prompt)
 		}
 		return true, nil
-	}, func(_ context.Context, _ *os.File, rows []progressui.ColorMappingRow, options []progressui.ColorOption) ([]string, error) {
-		result := make([]string, len(rows))
-		for index, row := range rows {
-			result[index] = options[row.Selected].Color
-		}
-		return result, nil
 	})
 	if status != 0 || calls != 2 || !confirmed {
 		t.Fatalf("status = %d, calls = %d, confirmed = %v; stderr = %s", status, calls, confirmed, readOutput(t, stderr))
@@ -315,10 +288,10 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	}
 }
 
-func TestRejectingAutomaticMixingStillAllowsExplicitColorMapping(t *testing.T) {
+func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithPrompts(
+	status := runWithConfirm(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -326,49 +299,22 @@ func TestRejectingAutomaticMixingStillAllowsExplicitColorMapping(t *testing.T) {
 			calls++
 			if calls == 1 {
 				return threemf.Report{}, &threemf.FullSpectrumRequiredError{
-					ColorCount:   2,
-					NonBaseCount: 1,
-					Mappings: []threemf.ColorMapping{
-						{MaterialIDs: []int{1}, Color: "#5E43B7", Used: true, Suggested: threemf.ColorCyan},
-						{MaterialIDs: []int{2}, Color: "#00AE42", Suggested: threemf.ColorYellow},
-					},
+					ColorCount:   6,
+					NonBaseCount: 2,
 				}
 			}
-			if request.FullSpectrum {
-				t.Fatal("rejected automatic full spectrum was enabled")
+			if request.FullSpectrum || !request.PreserveMaterialSlots {
+				t.Fatalf("retry request = %+v", request)
 			}
-			if request.ColorMapping[1] != "#5E43B7" || request.ColorMapping[2] != "#5E43B7" {
-				t.Fatalf("color mapping = %v", request.ColorMapping)
-			}
-			return threemf.Report{Mode: "full-spectrum", Output: request.Output, Colors: "cmwb", VirtualMixes: 1}, nil
+			return threemf.Report{Mode: "material-slots", Output: request.Output, Colors: "#FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42"}, nil
 		},
 		func(context.Context, *os.File, string) (bool, error) { return false, nil },
-		func(_ context.Context, _ *os.File, rows []progressui.ColorMappingRow, options []progressui.ColorOption) ([]string, error) {
-			if options[rows[0].Selected].Color != "#0000FF" || options[rows[1].Selected].Color != "#FFFF00" {
-				t.Fatalf("replacement defaults: rows=%+v options=%+v", rows, options)
-			}
-			return []string{"#5E43B7", "#5E43B7"}, nil
-		},
 	)
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
 	}
-}
-
-func TestColorMappingRowsOfferCMYGWhiteBlackAndDetectedMixes(t *testing.T) {
-	rows, options := colorMappingRows([]threemf.ColorMapping{
-		{MaterialIDs: []int{5}, Color: "#5E43B7", Used: true, Suggested: threemf.ColorCyan},
-	}, true)
-	want := []string{"#0000FF", "#FF0000", "#FFFF00", "#808080", "#FFFFFF", "#000000", "#5E43B7"}
-	got := make([]string, len(options))
-	for index, option := range options {
-		got[index] = option.Color
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %v, want %v", got, want)
-	}
-	if options[rows[0].Selected].Color != "#5E43B7" {
-		t.Fatalf("selected option = %+v", options[rows[0].Selected])
+	if got := readOutput(t, stdout); !strings.Contains(got, "U1 colors: #FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
+		t.Fatalf("stdout = %q", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -30,14 +31,14 @@ var (
 )
 
 type Request struct {
-	Source       string
-	Template     string
-	Output       string
-	Replace      bool
-	Nozzle       string
-	Palette      Palette
-	FullSpectrum bool
-	ColorMapping map[int]string
+	Source                string
+	Template              string
+	Output                string
+	Replace               bool
+	Nozzle                string
+	Palette               Palette
+	FullSpectrum          bool
+	PreserveMaterialSlots bool
 }
 
 type OutputExistsError struct {
@@ -122,7 +123,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	if err != nil {
 		return Report{}, err
 	}
-	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, usage, request.ColorMapping)
+	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, request.PreserveMaterialSlots, usage)
 	if err != nil {
 		return Report{}, err
 	}
@@ -180,7 +181,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	return Report{
 		Mode:            plan.mode,
 		Output:          request.Output,
-		Colors:          plan.palette.String(),
+		Colors:          plan.colorSummary(),
 		PhysicalMapping: plan.physicalMapping,
 		VirtualMixes:    plan.virtualMixes,
 		Plates:          plan.plates,
@@ -316,15 +317,18 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan) ma
 	for key, value := range template {
 		merged[key] = value
 	}
+	if plan.preserveSlots {
+		mergeMaterialSlotSettings(merged, source, len(plan.slotColors))
+	}
 	for _, key := range []string{"layer_height", "initial_layer_print_height"} {
 		if value, ok := source[key]; ok {
 			merged[key] = value
 		}
 	}
 	merged["mixed_filament_definitions"] = plan.definitions
-	merged["filament_colour"] = plan.palette.outputColors()
+	merged["filament_colour"] = plan.outputColors()
 	localZ := "0"
-	if plan.forceLocalZ || source["enable_mixed_color_sublayer"] == "1" {
+	if plan.forceLocalZ || (!plan.preserveSlots && source["enable_mixed_color_sublayer"] == "1") {
 		localZ = "1"
 	}
 	merged["dithering_local_z_mode"] = localZ
@@ -453,6 +457,18 @@ func verifyArchive(path string, plan materialPlan) error {
 	definitions, _ := settings["mixed_filament_definitions"].(string)
 	if definitions != plan.definitions {
 		return fmt.Errorf("verify project settings: mixed definitions changed")
+	}
+	if colors := stringSlice(settings["filament_colour"]); !slices.Equal(colors, plan.outputColors()) {
+		return fmt.Errorf("verify project settings: filament colors changed")
+	}
+	if plan.preserveSlots {
+		flags := stringSlice(settings["filament_is_mixed"])
+		if len(flags) != len(plan.slotColors) || slices.ContainsFunc(flags, func(flag string) bool { return flag != "0" }) {
+			return fmt.Errorf("verify project settings: preserved material slots became mixed")
+		}
+		if settings["dithering_local_z_mode"] != "0" {
+			return fmt.Errorf("verify project settings: Local-Z mixing remained enabled")
+		}
 	}
 	return nil
 }

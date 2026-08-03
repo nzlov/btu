@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	urfavecli "github.com/urfave/cli/v3"
@@ -18,10 +17,9 @@ import (
 
 type convertFunc func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error)
 type confirmFunc func(context.Context, *os.File, string) (bool, error)
-type mapColorsFunc func(context.Context, *os.File, []progressui.ColorMappingRow, []progressui.ColorOption) ([]string, error)
 
 func Run(args []string, stdout, stderr *os.File) int {
-	return runWithPrompts(
+	return runWithConfirm(
 		args,
 		stdout,
 		stderr,
@@ -29,14 +27,11 @@ func Run(args []string, stdout, stderr *os.File) int {
 		func(ctx context.Context, output *os.File, prompt string) (bool, error) {
 			return progressui.Confirm(ctx, os.Stdin, output, prompt)
 		},
-		func(ctx context.Context, output *os.File, rows []progressui.ColorMappingRow, options []progressui.ColorOption) ([]string, error) {
-			return progressui.MapColors(ctx, os.Stdin, output, rows, options)
-		},
 	)
 }
 
 func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
-	return runWithPrompts(
+	return runWithConfirm(
 		args,
 		stdout,
 		stderr,
@@ -44,15 +39,12 @@ func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
 		func(context.Context, *os.File, string) (bool, error) {
 			return false, errors.New("confirmation was not expected")
 		},
-		func(context.Context, *os.File, []progressui.ColorMappingRow, []progressui.ColorOption) ([]string, error) {
-			return nil, errors.New("color mapping was not expected")
-		},
 	)
 }
 
-// GLUE: keeps both Bubble Tea prompts injectable without leaking terminal concerns into conversion.
-func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, mapColors mapColorsFunc) int {
-	command := newCommand(stdout, stderr, convert, confirm, mapColors)
+// GLUE: keeps the Bubble Tea confirmation injectable without leaking terminal concerns into conversion.
+func runWithConfirm(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) int {
+	command := newCommand(stdout, stderr, convert, confirm)
 	osArgs := append([]string{"btu"}, args...)
 	if err := command.Run(context.Background(), osArgs); err != nil {
 		fmt.Fprintf(stderr, "btu: %v\n", err)
@@ -65,7 +57,7 @@ func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc,
 	return 0
 }
 
-func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, mapColors mapColorsFunc) *urfavecli.Command {
+func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) *urfavecli.Command {
 	nozzleFlag := &urfavecli.StringFlag{
 		Name:     "nozzle",
 		Aliases:  []string{"n"},
@@ -178,26 +170,13 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				}
 
 				var required *threemf.FullSpectrumRequiredError
-				if errors.As(err, &required) && !request.FullSpectrum && len(request.ColorMapping) == 0 && len(required.Mappings) > 0 {
-					accepted, confirmErr := confirm(ctx, stderr, fmt.Sprintf("Source declares %d colors; %d need mixing. Keep them with full-spectrum?", required.ColorCount, required.NonBaseCount))
+				if errors.As(err, &required) && !request.FullSpectrum && !request.PreserveMaterialSlots {
+					accepted, confirmErr := confirm(ctx, stderr, fmt.Sprintf("Source declares %d colors; %d need mixing. Generate them with full-spectrum mixing?", required.ColorCount, required.NonBaseCount))
 					if confirmErr != nil {
 						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum", confirmErr), 1)
 					}
-					rows, options := colorMappingRows(required.Mappings, accepted)
-					selected, mappingErr := mapColors(ctx, stderr, rows, options)
-					if mappingErr != nil {
-						return urfavecli.Exit(mappingErr, 1)
-					}
-					if len(selected) != len(required.Mappings) {
-						return urfavecli.Exit(fmt.Errorf("color mapping returned %d rows for %d source colors", len(selected), len(required.Mappings)), 1)
-					}
-					request.ColorMapping = make(map[int]string)
-					for index, mapping := range required.Mappings {
-						for _, material := range mapping.MaterialIDs {
-							request.ColorMapping[material] = selected[index]
-						}
-					}
 					request.FullSpectrum = accepted
+					request.PreserveMaterialSlots = !accepted
 					continue
 				}
 
@@ -294,62 +273,6 @@ func groupPlatesForPrinting(plates []threemf.PlateReport, initial threemf.ColorR
 	optimized = append(optimized, groups[initialIndex+1:]...)
 	return optimized
 }
-
-func colorMappingRows(mappings []threemf.ColorMapping, keepMixed bool) ([]progressui.ColorMappingRow, []progressui.ColorOption) {
-	baseColors := []struct {
-		role  threemf.ColorRole
-		label string
-		color string
-	}{
-		{role: threemf.ColorCyan, label: "cyan (c)", color: "#0000FF"},
-		{role: threemf.ColorMagenta, label: "magenta (m)", color: "#FF0000"},
-		{role: threemf.ColorYellow, label: "yellow (y)", color: "#FFFF00"},
-		{role: threemf.ColorGray, label: "gray (g)", color: "#808080"},
-		{role: threemf.ColorWhite, label: "white (w)", color: "#FFFFFF"},
-		{role: threemf.ColorBlack, label: "black (b)", color: "#000000"},
-	}
-	options := make([]progressui.ColorOption, 0, len(baseColors)+len(mappings))
-	roleOption := make(map[threemf.ColorRole]int, len(baseColors))
-	colorOption := make(map[string]int, len(baseColors)+len(mappings))
-	for _, base := range baseColors {
-		roleOption[base.role] = len(options)
-		colorOption[base.color] = len(options)
-		options = append(options, progressui.ColorOption{Label: base.label, Color: base.color})
-	}
-	for _, mapping := range mappings {
-		if mapping.Base {
-			continue
-		}
-		if _, exists := colorOption[mapping.Color]; exists {
-			continue
-		}
-		colorOption[mapping.Color] = len(options)
-		options = append(options, progressui.ColorOption{Label: "mixed", Color: mapping.Color})
-	}
-
-	rows := make([]progressui.ColorMappingRow, len(mappings))
-	for index, mapping := range mappings {
-		ids := make([]string, len(mapping.MaterialIDs))
-		for idIndex, material := range mapping.MaterialIDs {
-			ids[idIndex] = "T" + strconv.Itoa(material)
-		}
-		state := "unused"
-		if mapping.Used {
-			state = "used"
-		}
-		selected := roleOption[mapping.Suggested]
-		if keepMixed && !mapping.Base {
-			selected = colorOption[mapping.Color]
-		}
-		rows[index] = progressui.ColorMappingRow{
-			Label:    strings.Join(ids, "/") + " (" + state + ")",
-			Color:    mapping.Color,
-			Selected: selected,
-		}
-	}
-	return rows, options
-}
-
 func defaultOutputPath(source string) string {
 	directory := filepath.Dir(source)
 	name := filepath.Base(source)

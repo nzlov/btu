@@ -207,6 +207,84 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	}
 }
 
+func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	colors := []string{"#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42"}
+	types := []string{"PETG", "PLA", "PLA", "PLA", "PLA", "PLA"}
+	settingsIDs := []string{"Bambu PETG Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic"}
+	flowRatios := []string{"0.95", "0.98", "0.98", "0.98", "0.98", "0.98"}
+	nozzleTemperatures := []string{"255", "255", "220", "220", "220", "220", "220", "220", "220", "220", "220", "220"}
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour":                colors,
+		"filament_type":                  types,
+		"filament_settings_id":           settingsIDs,
+		"filament_flow_ratio":            flowRatios,
+		"filament_is_mixed":              []string{"0", "0", "0", "0", "0", "0"},
+		"filament_mixed_components":      []string{"", "", "", "", "", ""},
+		"filament_mixed_sublayer_ratios": []string{"", "", "", "", "", ""},
+		"filament_mixed_gradient":        []string{"0", "0", "0", "0", "0", "0"},
+		"filament_mixed_gradient_range":  []string{"", "", "", "", "", ""},
+		"nozzle_diameter":                []string{"0.4"},
+		"nozzle_temperature":             nozzleTemperatures,
+		"enable_mixed_color_sublayer":    "1",
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="6"/></config>`,
+	})
+
+	report, err := Convert(context.Background(), Request{
+		Source:                sourcePath,
+		Output:                outputPath,
+		PreserveMaterialSlots: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Mode != "material-slots" || report.VirtualMixes != 0 || report.Colors != strings.Join(colors, ",") {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	wantMapping := map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+	if !reflect.DeepEqual(report.PhysicalMapping, wantMapping) {
+		t.Fatalf("mapping = %v, want %v", report.PhysicalMapping, wantMapping)
+	}
+
+	settings := readTestJSONMember(t, outputPath, projectSettingsName)
+	for key, want := range map[string][]string{
+		"filament_colour":      colors,
+		"filament_type":        types,
+		"filament_settings_id": settingsIDs,
+		"filament_flow_ratio":  flowRatios,
+		"nozzle_temperature":   nozzleTemperatures,
+	} {
+		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want %v", key, got, want)
+		}
+	}
+	if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, []string{"0.4", "0.4", "0.4", "0.4"}) {
+		t.Fatalf("nozzle_diameter = %v, want four U1 heads", got)
+	}
+	if got := stringSlice(settings["filament_unloading_speed"]); len(got) != len(colors) {
+		t.Fatalf("filament_unloading_speed has %d slots, want %d", len(got), len(colors))
+	}
+	if settings["mixed_filament_definitions"] != "" || settings["dithering_local_z_mode"] != "0" {
+		t.Fatalf("mixing remained enabled: %v", settings)
+	}
+	if got := stringSlice(settings["filament_is_mixed"]); !reflect.DeepEqual(got, []string{"0", "0", "0", "0", "0", "0"}) {
+		t.Fatalf("filament_is_mixed = %v", got)
+	}
+	if got := stringSlice(settings["filament_mixed_gradient"]); !reflect.DeepEqual(got, []string{"0", "0", "0", "0", "0", "0"}) {
+		t.Fatalf("filament_mixed_gradient = %v", got)
+	}
+	modelSettings := readTestMember(t, outputPath, modelSettingsName)
+	for _, reference := range []string{`value="1"`, `value="6"`} {
+		if !strings.Contains(modelSettings, reference) {
+			t.Fatalf("model settings missing %s: %s", reference, modelSettings)
+		}
+	}
+}
+
 func TestConvertSelectsNozzleBaseline(t *testing.T) {
 	tests := []struct {
 		name          string

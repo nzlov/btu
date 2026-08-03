@@ -122,13 +122,12 @@ Printing steps (recommended order, 2 T4 changes):
 
 When any declared source color is not one of the six available colors and
 `--full-spectrum` was not supplied, an interactive terminal asks whether to
-keep the mixed colors. It then opens one mapping table for all detected colors.
-Each row can target any of the six colors or any other mixed color already
-detected in the project, so multiple source colors can share one generated
-mixture. Answering yes defaults non-base rows to their original colors;
-answering no defaults them to the closest CMY replacement while still allowing
-manual changes. Non-interactive runs return an error with instructions to pass
-`--full-spectrum`, which keeps all detected colors without opening the table.
+generate the colors with full-spectrum mixing. Answering yes keeps the existing
+four-filament synthesis behavior. Answering no creates one ordinary material
+slot for every source material, keeps the source T1...Tn order and per-material
+settings, and creates no virtual mixtures. This non-mixed result is not limited
+to four logical material slots. Non-interactive runs return an error with
+instructions to pass `--full-spectrum`.
 
 Override the built-in baseline when needed:
 

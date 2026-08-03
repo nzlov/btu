@@ -32,7 +32,7 @@ func TestPlanNativeMaterials(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, template, DefaultPalette(), false, projectMaterialUsage{}, nil)
+	plan, err := planMaterials(source, template, DefaultPalette(), false, false, projectMaterialUsage{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestPlanPlacesVirtualMaterialsAfterTemplateSlots(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, template, DefaultPalette(), false, projectMaterialUsage{}, nil)
+	plan, err := planMaterials(source, template, DefaultPalette(), false, false, projectMaterialUsage{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestPlanFullSpectrumWithBlackPreviewNeutral(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := planMaterials(source, template, palette, true, projectMaterialUsage{}, nil)
+	plan, err := planMaterials(source, template, palette, true, false, projectMaterialUsage{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestPlanPreservesUnusedDeclaredBaseColors(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 100, 3: 10, 4: 20}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 100, 3: 10, 4: 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestPlanReplacesUnusedRedSlotWithRequiredWhite(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestPlanCanReplaceAnotherUnusedBaseSlot(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestPlanChoosesBaseSlotForNearWhite(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 20, 2: 30, 3: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestPlanGroupsDuplicateUsedColors(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 20, 3: 10, 4: 10, 5: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 20, 3: 10, 4: 10, 5: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestPlanDoesNotRejectUnusedMaterialType(t *testing.T) {
 		"filament_type":   []string{"PETG", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{2: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{2: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestPlanMixesFifthBaseColorWithoutPrompt(t *testing.T) {
 		"filament_colour": []string{"#000000", "#FFFFFF", "#FF0000", "#FFFF00", "#0000FF"},
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA", "PLA"},
 	}
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 1, 2: 1, 3: 1, 4: 1, 5: 1}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 1, 2: 1, 3: 1, 4: 1, 5: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestPlanFullSpectrumPreservesBothDeclaredNeutrals(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, projectMaterialUsage{Total: test.usage}, nil)
+			plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, false, projectMaterialUsage{Total: test.usage})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -248,7 +248,7 @@ func TestPlanFullSpectrumRecognizesNearNeutralColors(t *testing.T) {
 		"filament_colour": []string{"#161616", "#F8F8F8", "#FF0000", "#FFFF00", "#0000FF"},
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA", "PLA"},
 	}
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, projectMaterialUsage{Total: materialUsage{1: 1, 2: 100, 3: 1, 4: 1, 5: 1}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, false, projectMaterialUsage{Total: materialUsage{1: 1, 2: 100, 3: 1, 4: 1, 5: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,26 +257,18 @@ func TestPlanFullSpectrumRecognizesNearNeutralColors(t *testing.T) {
 	}
 }
 
-func TestPlanRequestsMappingForEveryDeclaredNonBaseColor(t *testing.T) {
+func TestPlanRequestsChoiceForEveryDeclaredNonBaseColor(t *testing.T) {
 	source := map[string]any{
 		"filament_colour": []string{"#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42"},
 		"filament_type":   []string{"PETG", "PLA", "PLA", "PLA", "PLA", "PLA"},
 	}
-	usage := materialUsage{2: 10, 3: 100, 4: 30, 5: 20}
-
-	_, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: usage}, nil)
+	_, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{2: 10, 3: 100, 4: 30, 5: 20}})
 	var required *FullSpectrumRequiredError
 	if !errors.As(err, &required) {
 		t.Fatalf("error = %v, want FullSpectrumRequiredError", err)
 	}
-	if required.ColorCount != 6 || required.NonBaseCount != 2 || len(required.Mappings) != 6 {
+	if required.ColorCount != 6 || required.NonBaseCount != 2 {
 		t.Fatalf("unexpected required colors: %+v", required)
-	}
-	if required.Mappings[0].Used || !required.Mappings[4].Used || required.Mappings[5].Used {
-		t.Fatalf("used markers = %+v", required.Mappings)
-	}
-	if required.Mappings[4].Suggested != ColorCyan || required.Mappings[5].Suggested != ColorCyan {
-		t.Fatalf("suggestions = %+v", required.Mappings)
 	}
 }
 
@@ -295,7 +287,7 @@ func TestPlanMapsBlackCatWithPerPlateNeutralSlots(t *testing.T) {
 		},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, usage, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, false, usage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,19 +309,26 @@ func TestPlanMapsBlackCatWithPerPlateNeutralSlots(t *testing.T) {
 	}
 }
 
-func TestPlanAllowsMappingSeveralColorsToOneMixedTarget(t *testing.T) {
+func TestPlanPreservesEverySourceMaterialSlotWithoutMixing(t *testing.T) {
 	source := map[string]any{
-		"filament_colour": []string{"#FF0000", "#5E43B7", "#00AE42"},
-		"filament_type":   []string{"PLA", "PLA", "PLA"},
+		"filament_colour": []string{"#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42"},
+		"filament_type":   []string{"PETG", "PLA", "PLA", "PLA", "PLA", "PLA"},
 	}
-	targets := map[int]string{1: "#FF0000", 2: "#5E43B7", 3: "#5E43B7"}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), true, projectMaterialUsage{Total: materialUsage{1: 1, 2: 1, 3: 1}}, targets)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, true, projectMaterialUsage{Total: materialUsage{2: 10, 3: 100, 4: 30, 5: 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.virtualMixes != 1 || plan.allMapping[2] != plan.allMapping[3] {
+	if plan.mode != "material-slots" || plan.virtualMixes != 0 || plan.definitions != "" || plan.forceLocalZ {
 		t.Fatalf("unexpected mapped plan: %+v", plan)
+	}
+	wantMapping := map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
+		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
+	}
+	wantColors := []string{"#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42"}
+	if !reflect.DeepEqual(plan.outputColors(), wantColors) {
+		t.Fatalf("colors = %v, want %v", plan.outputColors(), wantColors)
 	}
 }
 
@@ -339,7 +338,7 @@ func TestPlanUsesWhiteNeutralAndMixesBlackOnSamePlate(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10, 4: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10, 4: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +357,7 @@ func TestPlanUsesFreeSlotForBlackInsteadOfMixingIt(t *testing.T) {
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
 	}
 
-	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10}}, nil)
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), false, false, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
