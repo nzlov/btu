@@ -6,10 +6,11 @@ geometry-layered projects and Bambu native Full Spectrum mixed materials. For
 ordinary projects, colors that cannot use a physical filament slot are
 automatically converted into U1 Full Spectrum mixtures.
 
-The built-in U1 baselines supply printer, process, and physical filament
-profiles for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies geometry,
-layer height, material references, face painting, and supported mixed-material
-definitions. An optional U1 3MF can override the built-in baselines.
+The built-in U1 baselines supply printer, process, nozzle, and U1-coupled
+extrusion settings for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies
+geometry, layer height, material profiles, material references, face painting,
+and supported mixed-material definitions. An optional U1 3MF can override the
+built-in baselines.
 
 ## Install
 
@@ -60,10 +61,15 @@ different nozzle:
 ```
 
 The selected baseline supplies the Snapmaker U1 printer, process, nozzle,
-filament, and slice metadata. Pass `--template` only when a different U1 3MF
-should override the built-in baseline. When `--template` and `--nozzle` are
-used together, the template is loaded first and the selected built-in nozzle
-profile is applied on top; unrelated template settings and metadata remain.
+slice, and nozzle-coupled extrusion metadata. Material properties such as type,
+temperature, flow ratio, density, cooling, and bed temperature come from the
+source and follow its material mapping into the U1 slots. When source materials
+with different properties share one physical U1 component, that component keeps
+the U1 baseline value instead of selecting one source profile arbitrarily. Pass
+`--template` only when a different U1 3MF should override the built-in baseline.
+When `--template` and `--nozzle` are used together, the template is loaded first
+and the selected built-in nozzle profile is applied on top; unrelated template
+settings and metadata remain.
 
 Slots 1 through 3 are always cyan, magenta, and yellow. Slot 4 is the neutral
 slot and can contain gray, white, or black:

@@ -12,6 +12,7 @@ type materialPlan struct {
 	mode            string
 	physicalMapping map[int]int
 	allMapping      map[int]int
+	sourceSlots     map[int][]int
 	slotColors      []string
 	definitions     string
 	virtualMixes    int
@@ -135,6 +136,10 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 		return materialPlan{}, err
 	}
 	allMapping := cloneMapping(physicalMapping)
+	sourceSlots := make(map[int][]int, physicalCount)
+	for material, slot := range physicalMapping {
+		sourceSlots[material] = []int{slot}
+	}
 	targetPhysicalCount := len(stringSlice(template["filament_colour"]))
 	components := stringSlice(source["filament_mixed_components"])
 	ratios := stringSlice(source["filament_mixed_sublayer_ratios"])
@@ -184,6 +189,7 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 		mode:            "native-mixed",
 		physicalMapping: physicalMapping,
 		allMapping:      allMapping,
+		sourceSlots:     sourceSlots,
 		definitions:     strings.Join(definitions, ";"),
 		virtualMixes:    len(definitions),
 		hasMultiColor:   hasMultiColor,
@@ -218,10 +224,12 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 	}
 
 	mapping := make(map[int]int, len(colors))
+	sourceSlots := make(map[int][]int, len(colors))
 	definitions := make([]string, 0, len(colors))
 	mixedTargets := make(map[string]int)
 	hasMultiColor := false
 	for index, recipe := range recipes {
+		sourceSlots[index+1] = append([]int(nil), recipe.components...)
 		if len(recipe.components) == 1 {
 			mapping[index+1] = recipe.components[0]
 			continue
@@ -255,6 +263,7 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		mode:            mode,
 		physicalMapping: cloneMapping(mapping),
 		allMapping:      mapping,
+		sourceSlots:     sourceSlots,
 		definitions:     strings.Join(definitions, ";"),
 		virtualMixes:    len(definitions),
 		hasMultiColor:   hasMultiColor,
@@ -289,6 +298,7 @@ func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
 	}
 	slotColors := make([]string, len(colors))
 	mapping := make(map[int]int, len(colors))
+	sourceSlots := make(map[int][]int, len(colors))
 	for index, value := range colors {
 		color, err := parseColor(value)
 		if err != nil {
@@ -296,11 +306,13 @@ func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
 		}
 		slotColors[index] = canonicalColor(color)
 		mapping[index+1] = index + 1
+		sourceSlots[index+1] = []int{index + 1}
 	}
 	return materialPlan{
 		mode:            "material-slots",
 		physicalMapping: cloneMapping(mapping),
 		allMapping:      mapping,
+		sourceSlots:     sourceSlots,
 		slotColors:      slotColors,
 		preserveSlots:   true,
 	}, nil

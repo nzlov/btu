@@ -207,6 +207,120 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	}
 }
 
+func TestConvertUsesSourceMaterialSettingsWithNozzleOverride(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour":               []string{"#FF0000", "#0000FF", "#FFFF00", "#808080"},
+		"filament_type":                 []string{"PLA", "PLA", "PLA", "PLA"},
+		"filament_settings_id":          []string{"Source T1", "Source T2", "Source T3", "Source T4"},
+		"filament_bambu_only":           []string{"1", "2", "3", "4"},
+		"filament_self_index":           []string{"1", "1", "2", "2", "3", "3", "4", "4"},
+		"filament_extruder_variant":     []string{"Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow"},
+		"filament_map":                  []string{"1", "1", "1", "1"},
+		"filament_volume_map":           []string{"1", "0", "1", "0"},
+		"extruder_type":                 []string{"Direct Drive"},
+		"filament_flow_ratio":           []string{"0.91", "9.91", "0.92", "9.92", "0.93", "9.93", "0.94", "9.94"},
+		"filament_max_volumetric_speed": []string{"91", "92", "93", "94"},
+		"nozzle_temperature":            []string{"211", "911", "222", "922", "233", "933", "244", "944"},
+		"pressure_advance":              []string{"0.91", "0.92", "0.93", "0.94"},
+		"nozzle_diameter":               []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="2"/><metadata key="extruder" value="3"/><metadata key="extruder" value="4"/></config>`,
+	})
+
+	_, err := Convert(context.Background(), Request{
+		Source: sourcePath,
+		Output: outputPath,
+		Nozzle: "0.2",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := readTestJSONMember(t, outputPath, projectSettingsName)
+	for key, want := range map[string][]string{
+		"filament_settings_id": {"Source T2", "Source T1", "Source T3", "Source T4"},
+		"filament_flow_ratio":  {"0.92", "9.91", "9.93", "0.94"},
+		"nozzle_temperature":   {"222", "911", "933", "244"},
+	} {
+		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want source values %v", key, got, want)
+		}
+	}
+	for key, want := range map[string][]string{
+		"filament_max_volumetric_speed": {"1.6", "1.6", "1.6", "1.6"},
+		"pressure_advance":              {"0.02", "0.02", "0.02", "0.02"},
+	} {
+		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want 0.2 mm U1 values %v", key, got, want)
+		}
+	}
+	if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, []string{"0.2", "0.2", "0.2", "0.2"}) {
+		t.Fatalf("nozzle_diameter = %v, want 0.2 mm U1 nozzles", got)
+	}
+	if got := settings["printer_model"]; got != "Snapmaker U1" {
+		t.Fatalf("printer_model = %v, want Snapmaker U1", got)
+	}
+	if _, exists := settings["filament_bambu_only"]; exists {
+		t.Fatal("Bambu-only filament setting was copied into U1 output")
+	}
+}
+
+func TestConvertPropagatesSourceMaterialSettingsToMixedComponents(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour":     []string{"#5E43B7"},
+		"filament_type":       []string{"PLA"},
+		"filament_flow_ratio": []string{"0.93"},
+		"nozzle_temperature":  []string{"235"},
+		"nozzle_diameter":     []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/></config>`,
+	})
+
+	_, err := Convert(context.Background(), Request{
+		Source:       sourcePath,
+		Output:       outputPath,
+		FullSpectrum: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := readTestJSONMember(t, outputPath, projectSettingsName)
+	for key, want := range map[string][]string{
+		"filament_flow_ratio": {"0.93", "0.93", "0.98", "0.93"},
+		"nozzle_temperature":  {"235", "235", "220", "235"},
+	} {
+		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want source values %v", key, got, want)
+		}
+	}
+}
+
+func TestRemapMaterialSettingKeepsBaselineForConflictingSources(t *testing.T) {
+	mapped, ok := remapMaterialSettingValue(
+		[]string{"210", "230", "240"},
+		[]string{"220", "220", "220", "220"},
+		3,
+		4,
+		map[int][]int{1: {1}, 2: {2}, 3: {2}},
+	)
+	if !ok {
+		t.Fatal("remapMaterialSettingValue rejected valid slot settings")
+	}
+	want := []string{"210", "220", "220", "220"}
+	if got := stringSlice(mapped); !reflect.DeepEqual(got, want) {
+		t.Fatalf("mapped values = %v, want %v", got, want)
+	}
+}
+
 func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 	directory := t.TempDir()
 	sourcePath := filepath.Join(directory, "source.3mf")
@@ -216,11 +330,14 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 	settingsIDs := []string{"Bambu PETG Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic", "Bambu PLA Basic"}
 	flowRatios := []string{"0.95", "0.98", "0.98", "0.98", "0.98", "0.98"}
 	nozzleTemperatures := []string{"255", "255", "220", "220", "220", "220", "220", "220", "220", "220", "220", "220"}
+	flushMatrix := repeatedSlotValue("123", 36)
+	flushVector := repeatedSlotValue("61", 12)
 	writeTest3MF(t, sourcePath, map[string]any{
 		"filament_colour":                colors,
 		"filament_type":                  types,
 		"filament_settings_id":           settingsIDs,
 		"filament_flow_ratio":            flowRatios,
+		"filament_max_volumetric_speed":  repeatedSlotValue("99", 6),
 		"filament_is_mixed":              []string{"0", "0", "0", "0", "0", "0"},
 		"filament_mixed_components":      []string{"", "", "", "", "", ""},
 		"filament_mixed_sublayer_ratios": []string{"", "", "", "", "", ""},
@@ -228,6 +345,9 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 		"filament_mixed_gradient_range":  []string{"", "", "", "", "", ""},
 		"nozzle_diameter":                []string{"0.4"},
 		"nozzle_temperature":             nozzleTemperatures,
+		"pressure_advance":               repeatedSlotValue("0.99", 6),
+		"flush_volumes_matrix":           flushMatrix,
+		"flush_volumes_vector":           flushVector,
 		"enable_mixed_color_sublayer":    "1",
 	}, map[string]string{
 		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
@@ -237,6 +357,7 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 	report, err := Convert(context.Background(), Request{
 		Source:                sourcePath,
 		Output:                outputPath,
+		Nozzle:                "0.2",
 		PreserveMaterialSlots: true,
 	}, nil)
 	if err != nil {
@@ -262,8 +383,18 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 			t.Fatalf("%s = %v, want %v", key, got, want)
 		}
 	}
-	if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, []string{"0.4", "0.4", "0.4", "0.4"}) {
+	if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, []string{"0.2", "0.2", "0.2", "0.2"}) {
 		t.Fatalf("nozzle_diameter = %v, want four U1 heads", got)
+	}
+	for key, want := range map[string][]string{
+		"filament_max_volumetric_speed": repeatedSlotValue("1.6", 6),
+		"pressure_advance":              repeatedSlotValue("0.02", 6),
+		"flush_volumes_matrix":          flushMatrix,
+		"flush_volumes_vector":          flushVector,
+	} {
+		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want %v", key, got, want)
+		}
 	}
 	if got := stringSlice(settings["filament_unloading_speed"]); len(got) != len(colors) {
 		t.Fatalf("filament_unloading_speed has %d slots, want %d", len(got), len(colors))

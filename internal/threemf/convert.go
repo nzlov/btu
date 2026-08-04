@@ -324,9 +324,7 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan) ma
 	for key, value := range template {
 		merged[key] = value
 	}
-	if plan.preserveSlots {
-		mergeMaterialSlotSettings(merged, source, len(plan.slotColors))
-	}
+	mergeMaterialSettings(merged, source, plan)
 	for _, key := range []string{"layer_height", "initial_layer_print_height"} {
 		if value, ok := source[key]; ok {
 			merged[key] = value

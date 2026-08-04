@@ -1,6 +1,10 @@
 package threemf
 
-import "strings"
+import (
+	"reflect"
+	"strconv"
+	"strings"
+)
 
 var materialSlotSettingNames = map[string]struct{}{
 	"activate_air_filtration":                  {},
@@ -73,19 +77,146 @@ var materialSlotSettingNames = map[string]struct{}{
 	"textured_plate_temp_initial_layer":        {},
 }
 
-func mergeMaterialSlotSettings(target, source map[string]any, slotCount int) {
+var u1CoupledMaterialSettingNames = map[string]struct{}{
+	"enable_pressure_advance":       {},
+	"filament_end_gcode":            {},
+	"filament_max_volumetric_speed": {},
+	"filament_start_gcode":          {},
+	"pressure_advance":              {},
+}
+
+var mappedMaterialSettingNames = map[string]struct{}{
+	"filament_colour":           {},
+	"filament_colour_mode":      {},
+	"filament_extruder_variant": {},
+	"filament_map":              {},
+	"filament_multi_colors":     {},
+	"filament_nozzle_map":       {},
+	"filament_self_index":       {},
+	"filament_volume_map":       {},
+	"flush_volumes_matrix":      {},
+	"flush_volumes_vector":      {},
+}
+
+var u1CoupledMaterialSettingPrefixes = [...]string{
+	"filament_deretraction_",
+	"filament_loading_",
+	"filament_long_retractions_",
+	"filament_multitool_",
+	"filament_ramming_",
+	"filament_retract",
+	"filament_stamping_",
+	"filament_toolchange_",
+	"filament_unloading_",
+	"filament_wipe",
+	"filament_z_hop",
+}
+
+func mergeMaterialSettings(target, source map[string]any, plan materialPlan) {
+	if plan.preserveSlots {
+		mergePreservedMaterialSettings(target, source, len(plan.slotColors))
+		return
+	}
+
+	sourceSlotCount := len(stringSlice(source["filament_colour"]))
+	targetSlotCount := len(plan.palette.Slots)
+	for key := range source {
+		if !isMappedSourceMaterialSetting(key) {
+			continue
+		}
+		targetValue, supported := target[key]
+		if !supported {
+			continue
+		}
+		sourceValue, ok := sourceMaterialSettingValue(source, key, sourceSlotCount)
+		if !ok {
+			continue
+		}
+		mapped, ok := remapMaterialSettingValue(sourceValue, targetValue, sourceSlotCount, targetSlotCount, plan.sourceSlots)
+		if ok {
+			target[key] = mapped
+		}
+	}
+}
+
+func sourceMaterialSettingValue(source map[string]any, key string, slotCount int) (any, bool) {
+	value := source[key]
+	values, isSlice := anySlice(value)
+	if !isSlice || len(values) == slotCount {
+		return value, true
+	}
+
+	indexes := stringSlice(source["filament_self_index"])
+	if len(indexes) != len(values) {
+		return nil, false
+	}
+	variants := stringSlice(source["filament_extruder_variant"])
+	if len(variants) != len(values) {
+		return nil, false
+	}
+	selected := make([]any, slotCount)
+	found := make([]bool, slotCount)
+	for index, rawSlot := range indexes {
+		slot, err := strconv.Atoi(rawSlot)
+		if err != nil || slot < 1 || slot > slotCount {
+			continue
+		}
+		if found[slot-1] || variants[index] != sourceFilamentVariant(source, slot-1) {
+			continue
+		}
+		selected[slot-1] = values[index]
+		found[slot-1] = true
+	}
+	for _, exists := range found {
+		if !exists {
+			return nil, false
+		}
+	}
+	return selected, true
+}
+
+func sourceFilamentVariant(source map[string]any, slot int) string {
+	volumeTypes := map[int]string{
+		0: "Standard",
+		1: "High Flow",
+		2: "Hybrid",
+		3: "TPU High Flow",
+		5: "E3D High Flow",
+	}
+	volumeType := intAt(source["filament_volume_map"], slot, 0)
+	extruder := intAt(source["filament_map"], slot, 1) - 1
+	extruderTypes := stringSlice(source["extruder_type"])
+	if extruder < 0 || extruder >= len(extruderTypes) {
+		return "Direct Drive " + volumeTypes[volumeType]
+	}
+	return extruderTypes[extruder] + " " + volumeTypes[volumeType]
+}
+
+func intAt(value any, index, fallback int) int {
+	values := stringSlice(value)
+	if index < 0 || index >= len(values) {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(values[index])
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func mergePreservedMaterialSettings(target, source map[string]any, slotCount int) {
 	for key, targetValue := range target {
 		if !isMaterialSlotSetting(key) {
 			continue
 		}
-		if sourceValue, exists := source[key]; exists {
+		if sourceValue, exists := source[key]; exists && isSourceMaterialSetting(key) {
 			target[key] = sourceValue
 			continue
 		}
 		target[key] = resizeFourSlotValue(targetValue, slotCount)
 	}
 	for key, value := range source {
-		if isMaterialSlotSetting(key) {
+		if isSourceMaterialSetting(key) {
 			target[key] = value
 		}
 	}
@@ -101,6 +232,69 @@ func mergeMaterialSlotSettings(target, source map[string]any, slotCount int) {
 	target["filament_mixed_gradient"] = repeatedSlotValue("0", slotCount)
 }
 
+func remapMaterialSettingValue(sourceValue, targetValue any, sourceSlotCount, targetSlotCount int, sourceSlots map[int][]int) (any, bool) {
+	sourceValues, sourceIsSlice := anySlice(sourceValue)
+	if !sourceIsSlice {
+		return sourceValue, true
+	}
+	if len(sourceValues) != sourceSlotCount || sourceSlotCount == 0 || targetSlotCount == 0 {
+		return nil, false
+	}
+
+	targetValues, targetIsSlice := anySlice(targetValue)
+	if targetIsSlice && len(targetValues) != targetSlotCount {
+		return nil, false
+	}
+	result := make([]any, targetSlotCount)
+	assigned := make([]bool, targetSlotCount)
+	conflict := make([]bool, targetSlotCount)
+	// Several source materials can share a U1 component. Keep its baseline value
+	// when their material profiles disagree instead of choosing one arbitrarily.
+	for sourceSlot, targetSlots := range sourceSlots {
+		if sourceSlot < 1 || sourceSlot > len(sourceValues) {
+			continue
+		}
+		for _, targetSlot := range targetSlots {
+			if targetSlot < 1 || targetSlot > targetSlotCount {
+				continue
+			}
+			index := targetSlot - 1
+			if assigned[index] && !reflect.DeepEqual(result[index], sourceValues[sourceSlot-1]) {
+				conflict[index] = true
+				continue
+			}
+			result[index] = sourceValues[sourceSlot-1]
+			assigned[index] = true
+		}
+	}
+
+	for index := range result {
+		if assigned[index] && !conflict[index] {
+			continue
+		}
+		if !targetIsSlice {
+			return nil, false
+		}
+		result[index] = targetValues[index]
+	}
+	return result, true
+}
+
+func anySlice(value any) ([]any, bool) {
+	switch values := value.(type) {
+	case []any:
+		return values, true
+	case []string:
+		result := make([]any, len(values))
+		for index, value := range values {
+			result[index] = value
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
 func isMaterialSlotSetting(key string) bool {
 	if strings.HasPrefix(key, "filament_mixed") || key == "filament_is_mixed" {
 		return false
@@ -110,6 +304,29 @@ func isMaterialSlotSetting(key string) bool {
 	}
 	_, exists := materialSlotSettingNames[key]
 	return exists
+}
+
+func isSourceMaterialSetting(key string) bool {
+	if !isMaterialSlotSetting(key) {
+		return false
+	}
+	if _, coupled := u1CoupledMaterialSettingNames[key]; coupled {
+		return false
+	}
+	for _, prefix := range u1CoupledMaterialSettingPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func isMappedSourceMaterialSetting(key string) bool {
+	if !isSourceMaterialSetting(key) {
+		return false
+	}
+	_, derived := mappedMaterialSettingNames[key]
+	return !derived
 }
 
 func resizeFourSlotValue(value any, slotCount int) any {
