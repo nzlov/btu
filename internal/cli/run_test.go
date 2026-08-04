@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/nzlov/btu/internal/progressui"
 	"github.com/nzlov/btu/internal/threemf"
 )
 
@@ -21,6 +23,7 @@ func TestHelpReturnsSuccess(t *testing.T) {
 		"--replace, -r",
 		"--colors ORDER, -c ORDER",
 		"--full-spectrum, -f",
+		"--mix-mode MODE, -m MODE",
 		"--nozzle DIAMETER_MM, -n DIAMETER_MM",
 		"allowed: 0.2, 0.4, 0.6, 0.8",
 		"--template FILE, -t FILE",
@@ -63,19 +66,22 @@ func TestOutputDefaultsNextToSource(t *testing.T) {
 	if request.Palette.Slots != wantSlots {
 		t.Fatalf("palette = %v, want %v", request.Palette.Slots, wantSlots)
 	}
+	if request.MixMode != threemf.MixModeRatio {
+		t.Fatalf("mix mode = %q, want ratio", request.MixMode)
+	}
 }
 
 func TestFlagsReachConversionRequest(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	var request threemf.Request
-	status := run([]string{"-o", "output.3mf", "-r", "-c", "cmyb", "-f", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+	status := run([]string{"-o", "output.3mf", "-r", "-c", "cmyb", "-f", "-m", "gradient", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		request = got
 		return threemf.Report{Mode: "full-spectrum", Output: got.Output}, nil
 	})
 	if status != 0 {
 		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
 	}
-	if request.Source != "source.3mf" || request.Output != "output.3mf" || request.Template != "custom.3mf" || request.Nozzle != "0.8" || !request.Replace || !request.FullSpectrum {
+	if request.Source != "source.3mf" || request.Output != "output.3mf" || request.Template != "custom.3mf" || request.Nozzle != "0.8" || !request.Replace || !request.FullSpectrum || request.MixMode != threemf.MixModeGradient {
 		t.Fatalf("unexpected request: %+v", request)
 	}
 	wantSlots := [4]threemf.ColorRole{threemf.ColorCyan, threemf.ColorMagenta, threemf.ColorYellow, threemf.ColorBlack}
@@ -87,7 +93,7 @@ func TestFlagsReachConversionRequest(t *testing.T) {
 func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithConfirm(
+	status := runWithPrompts(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -107,6 +113,7 @@ func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 			}
 			return true, nil
 		},
+		unexpectedMixModeSelection,
 	)
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
@@ -116,7 +123,7 @@ func TestExistingOutputConfirmationRetriesWithReplace(t *testing.T) {
 func TestRejectingExistingOutputStopsConversion(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithConfirm(
+	status := runWithPrompts(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -125,6 +132,7 @@ func TestRejectingExistingOutputStopsConversion(t *testing.T) {
 			return threemf.Report{}, &threemf.OutputExistsError{Path: request.Output}
 		},
 		func(context.Context, *os.File, string) (bool, error) { return false, nil },
+		unexpectedMixModeSelection,
 	)
 	if status != 1 || calls != 1 {
 		t.Fatalf("status = %d, calls = %d", status, calls)
@@ -138,7 +146,7 @@ func TestReplacementConfirmationCanContinueToFullSpectrumChoice(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
 	confirmations := 0
-	status := runWithConfirm(
+	status := runWithPrompts(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -166,6 +174,7 @@ func TestReplacementConfirmationCanContinueToFullSpectrumChoice(t *testing.T) {
 			confirmations++
 			return true, nil
 		},
+		unexpectedMixModeSelection,
 	)
 	if status != 0 || calls != 3 || confirmations != 2 {
 		t.Fatalf("status = %d, calls = %d, confirmations = %d; stderr = %s", status, calls, confirmations, readOutput(t, stderr))
@@ -183,6 +192,21 @@ func TestInvalidColorsAreRejectedBeforeConversion(t *testing.T) {
 		t.Fatalf("status = %d, called = %v", status, called)
 	}
 	if got := readOutput(t, stderr); !strings.Contains(got, "slots 1-3 are fixed") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestInvalidMixModeIsRejectedBeforeConversion(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	called := false
+	status := run([]string{"--mix-mode", "blend", "source.3mf"}, stdout, stderr, func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error) {
+		called = true
+		return threemf.Report{}, nil
+	})
+	if status != 2 || called {
+		t.Fatalf("status = %d, called = %v", status, called)
+	}
+	if got := readOutput(t, stderr); !strings.Contains(got, "allowed: ratio, cycle, match, gradient") {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -261,7 +285,7 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
 	confirmed := false
-	status := runWithConfirm([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+	status := runWithPrompts([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		calls++
 		if calls == 1 {
 			return threemf.Report{}, &threemf.FullSpectrumRequiredError{
@@ -279,7 +303,7 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 			t.Fatalf("prompt = %q", prompt)
 		}
 		return true, nil
-	})
+	}, unexpectedMixModeSelection)
 	if status != 0 || calls != 2 || !confirmed {
 		t.Fatalf("status = %d, calls = %d, confirmed = %v; stderr = %s", status, calls, confirmed, readOutput(t, stderr))
 	}
@@ -288,10 +312,53 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	}
 }
 
+func TestMixModeSelectionOverridesIndividualSourceColors(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	calls := 0
+	status := runWithPrompts(
+		[]string{"-o", "output.3mf", "--mix-mode", "match", "source.3mf"},
+		stdout,
+		stderr,
+		func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+			calls++
+			if calls == 1 {
+				return threemf.Report{}, &threemf.FullSpectrumRequiredError{
+					ColorCount: 2, NonBaseCount: 2,
+					Colors: []threemf.MixModeColor{
+						{MaterialIDs: []int{1, 3}, Color: "#5E43B7", Used: true},
+						{MaterialIDs: []int{2}, Color: "#00AE42"},
+					},
+				}
+			}
+			if !request.FullSpectrum || request.MixMode != threemf.MixModeMatch {
+				t.Fatalf("retry request = %+v", request)
+			}
+			want := map[int]threemf.MixMode{1: threemf.MixModeCycle, 2: threemf.MixModeGradient, 3: threemf.MixModeCycle}
+			if !reflect.DeepEqual(request.MaterialMixModes, want) {
+				t.Fatalf("material modes = %v, want %v", request.MaterialMixModes, want)
+			}
+			return threemf.Report{Mode: "full-spectrum", Output: request.Output}, nil
+		},
+		func(context.Context, *os.File, string) (bool, error) { return true, nil },
+		func(_ context.Context, _ *os.File, rows []progressui.MixModeRow, options []progressui.MixModeOption) ([]string, error) {
+			if len(rows) != 2 || rows[0].Color != "#5E43B7" || rows[0].Label != "T1/T3 (used)" || rows[0].Selected != 2 {
+				t.Fatalf("rows = %+v", rows)
+			}
+			if len(options) != 4 || options[3].Value != "gradient" {
+				t.Fatalf("options = %+v", options)
+			}
+			return []string{"cycle", "gradient"}, nil
+		},
+	)
+	if status != 0 || calls != 2 {
+		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
+	}
+}
+
 func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	status := runWithConfirm(
+	status := runWithPrompts(
 		[]string{"-o", "output.3mf", "source.3mf"},
 		stdout,
 		stderr,
@@ -309,6 +376,7 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 			return threemf.Report{Mode: "material-slots", Output: request.Output, Colors: "#FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42"}, nil
 		},
 		func(context.Context, *os.File, string) (bool, error) { return false, nil },
+		unexpectedMixModeSelection,
 	)
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
@@ -316,6 +384,10 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	if got := readOutput(t, stdout); !strings.Contains(got, "U1 colors: #FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
 		t.Fatalf("stdout = %q", got)
 	}
+}
+
+func unexpectedMixModeSelection(context.Context, *os.File, []progressui.MixModeRow, []progressui.MixModeOption) ([]string, error) {
+	return nil, errors.New("mix mode selection was not expected")
 }
 
 func tempOutputs(t *testing.T) (*os.File, *os.File) {

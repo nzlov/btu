@@ -11,7 +11,16 @@ profiles for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies geometry,
 layer height, material references, face painting, and supported mixed-material
 definitions. An optional U1 3MF can override the built-in baselines.
 
-## Build
+## Install
+
+```sh
+go install github.com/nzlov/btu/cmd/btu@latest
+```
+
+This installs `btu` into `GOBIN`, or into `GOPATH/bin` when `GOBIN` is not set.
+Make sure that directory is included in `PATH` before running `btu`.
+
+## Build from source
 
 ```sh
 go build -o btu ./cmd/btu
@@ -36,6 +45,7 @@ Options:
 | `--replace` | `-r` | no | Replace an existing output without prompting |
 | `--colors ORDER` | `-c ORDER` | no | Set the project-preview palette to `cmyg`, `cmyw`, or `cmyb` |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
+| `--mix-mode MODE` | `-m MODE` | no | Set generated mixtures to `ratio`, `cycle`, `match`, or `gradient` (default: `ratio`) |
 | `--nozzle DIAMETER_MM` | `-n DIAMETER_MM` | no | Force a built-in baseline; accepts `0.2`, `0.4`, `0.6`, or `0.8` (millimeters) |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
 
@@ -91,9 +101,8 @@ the T4 filament named in the per-plate steps. An empty plate name remains empty;
 `btu` does not substitute a model name.
 
 The converter maps the neutral selected for a plate directly to T4 and mixes
-the other mapped colors when needed. It searches one- to four-component recipes
-with integer percentages against that plate's actual `cmyg`, `cmyw`, or `cmyb`
-filaments,
+the other mapped colors when needed. It searches recipes against that plate's
+actual `cmyg`, `cmyw`, or `cmyb` filaments,
 scores their preview colors with the same MIT-licensed FilamentMixer model used
 by FullSpectrum, creates the required virtual materials, remaps model and
 face-paint references, and enables U1 Local-Z mixed-color printing. If the same
@@ -117,17 +126,30 @@ Printing steps (recommended order, 2 T4 changes):
 ./btu \
     --output ~/Downloads/model-full-spectrum.3mf \
     --full-spectrum \
+    --mix-mode match \
     ~/Downloads/model.3mf
 ```
 
+Generated mixtures support the four Snapmaker Orca modes:
+
+- `ratio` uses the closest weighted recipe with at most three filaments.
+- `cycle` converts a weighted recipe of up to four filaments into a balanced,
+  repeating layer pattern.
+- `match` uses the closest weighted recipe with up to four filaments.
+- `gradient` chooses the closest 50:50 two-filament pair and creates an A-to-B
+  gradient from 80% to 20% A.
+
 When any declared source color is not one of the six available colors and
 `--full-spectrum` was not supplied, an interactive terminal asks whether to
-generate the colors with full-spectrum mixing. Answering yes keeps the existing
-four-filament synthesis behavior. Answering no creates one ordinary material
-slot for every source material, keeps the source T1...Tn order and per-material
-settings, and creates no virtual mixtures. This non-mixed result is not limited
-to four logical material slots. Non-interactive runs return an error with
-instructions to pass `--full-spectrum`.
+generate the colors with full-spectrum mixing. Answering yes opens a mix-mode
+list showing only colors that require synthesis, with their original swatch and
+hex value. Use Up/Down to choose a source color, Left/Right to change only that
+color's mode, and Enter to apply. Direct base colors are not listed.
+Answering no creates one ordinary material slot for every source material,
+keeps the source T1...Tn order and per-material settings, and creates no virtual
+mixtures. This non-mixed result is not limited to four logical material slots.
+Non-interactive runs return an error with instructions to pass
+`--full-spectrum`; `--mix-mode` then applies one mode to every generated mixture.
 
 Override the built-in baseline when needed:
 

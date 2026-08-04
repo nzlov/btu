@@ -48,13 +48,13 @@ func cloneUsage(source materialUsage) materialUsage {
 	return result
 }
 
-func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Palette) ([]platePlan, error) {
+func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Palette, modes []MixMode) ([]platePlan, error) {
 	plans := make([]platePlan, 0, len(usage.Plates))
 	for _, plate := range usage.Plates {
 		bestScore := plateScore{maxError: math.Inf(1), totalError: math.Inf(1), mixCost: math.Inf(1)}
 		bestNeutral := ColorRole("")
 		for _, candidate := range paletteCandidates(preferred) {
-			score, err := scorePlatePalette(colors, plate.Materials, candidate)
+			score, err := scorePlatePalette(colors, plate.Materials, candidate, modes)
 			if err != nil {
 				return nil, fmt.Errorf("plate %d: %w", plate.ID, err)
 			}
@@ -73,13 +73,13 @@ func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Pal
 	return plans, nil
 }
 
-func scorePlatePalette(colors [][3]int, usage materialUsage, palette Palette) (plateScore, error) {
+func scorePlatePalette(colors [][3]int, usage materialUsage, palette Palette, modes []MixMode) (plateScore, error) {
 	score := plateScore{}
 	for material, weight := range usage {
 		if material <= 0 || material > len(colors) || weight <= 0 {
 			continue
 		}
-		recipe, ok := bestColorRecipe(colors[material-1], palette)
+		recipe, ok := bestColorRecipeForMode(colors[material-1], palette, mixModeAt(modes, material))
 		if !ok {
 			return plateScore{}, fmt.Errorf("source T%d cannot be represented by %s", material, palette.String())
 		}
@@ -108,7 +108,7 @@ func betterPlateScore(candidate, current plateScore) bool {
 	return false
 }
 
-func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []platePlan, preferred Palette) ([]colorRecipe, error) {
+func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []platePlan, preferred Palette, modes []MixMode) ([]colorRecipe, error) {
 	materialNeutrals := make(map[int]map[ColorRole]bool)
 	for _, plan := range plans {
 		for material, weight := range plan.usage {
@@ -124,18 +124,19 @@ func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []p
 
 	recipes := make([]colorRecipe, len(colors))
 	for index, color := range colors {
+		mode := mixModeAt(modes, index+1)
 		neutrals := materialNeutrals[index+1]
 		var recipe colorRecipe
 		var ok bool
 		switch len(neutrals) {
 		case 0:
-			recipe, ok = bestColorRecipe(color, preferred)
+			recipe, ok = bestColorRecipeForMode(color, preferred, mode)
 		case 1:
 			for neutral := range neutrals {
-				recipe, ok = bestColorRecipe(color, paletteWithNeutral(neutral))
+				recipe, ok = bestColorRecipeForMode(color, paletteWithNeutral(neutral), mode)
 			}
 		default:
-			recipe, ok = bestCMYRecipe(color)
+			recipe, ok = bestCMYRecipeForMode(color, mode)
 		}
 		if !ok {
 			return nil, fmt.Errorf("source T%d target %s has no compatible recipe", index+1, canonicalColor(color))
@@ -143,6 +144,13 @@ func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []p
 		recipes[index] = recipe
 	}
 	return recipes, nil
+}
+
+func mixModeAt(modes []MixMode, material int) MixMode {
+	if material > 0 && material <= len(modes) && modes[material-1] != "" {
+		return modes[material-1]
+	}
+	return MixModeRatio
 }
 
 func paletteWithNeutral(neutral ColorRole) Palette {

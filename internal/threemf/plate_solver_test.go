@@ -11,14 +11,14 @@ func TestSharedMaterialAcrossDifferentNeutralsUsesCMYOnly(t *testing.T) {
 			{ID: 2, Materials: materialUsage{1: 10, 2: 10}},
 		},
 	}
-	plans, err := selectPlatePlans(colors, usage, DefaultPalette())
+	plans, err := selectPlatePlans(colors, usage, DefaultPalette(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plans[0].neutral != ColorBlack || plans[1].neutral != ColorWhite {
 		t.Fatalf("plate neutrals = %+v, want black then white", plans)
 	}
-	recipes, err := selectProjectRecipes(colors, usage, plans, DefaultPalette())
+	recipes, err := selectProjectRecipes(colors, usage, plans, DefaultPalette(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

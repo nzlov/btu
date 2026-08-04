@@ -17,9 +17,10 @@ import (
 
 type convertFunc func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error)
 type confirmFunc func(context.Context, *os.File, string) (bool, error)
+type selectMixModesFunc func(context.Context, *os.File, []progressui.MixModeRow, []progressui.MixModeOption) ([]string, error)
 
 func Run(args []string, stdout, stderr *os.File) int {
-	return runWithConfirm(
+	return runWithPrompts(
 		args,
 		stdout,
 		stderr,
@@ -27,11 +28,14 @@ func Run(args []string, stdout, stderr *os.File) int {
 		func(ctx context.Context, output *os.File, prompt string) (bool, error) {
 			return progressui.Confirm(ctx, os.Stdin, output, prompt)
 		},
+		func(ctx context.Context, output *os.File, rows []progressui.MixModeRow, options []progressui.MixModeOption) ([]string, error) {
+			return progressui.SelectMixModes(ctx, os.Stdin, output, rows, options)
+		},
 	)
 }
 
 func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
-	return runWithConfirm(
+	return runWithPrompts(
 		args,
 		stdout,
 		stderr,
@@ -39,12 +43,15 @@ func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
 		func(context.Context, *os.File, string) (bool, error) {
 			return false, errors.New("confirmation was not expected")
 		},
+		func(context.Context, *os.File, []progressui.MixModeRow, []progressui.MixModeOption) ([]string, error) {
+			return nil, errors.New("mix mode selection was not expected")
+		},
 	)
 }
 
-// GLUE: keeps the Bubble Tea confirmation injectable without leaking terminal concerns into conversion.
-func runWithConfirm(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) int {
-	command := newCommand(stdout, stderr, convert, confirm)
+// GLUE: keeps Bubble Tea prompts injectable without leaking terminal concerns into conversion.
+func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectMixModes selectMixModesFunc) int {
+	command := newCommand(stdout, stderr, convert, confirm, selectMixModes)
 	osArgs := append([]string{"btu"}, args...)
 	if err := command.Run(context.Background(), osArgs); err != nil {
 		fmt.Fprintf(stderr, "btu: %v\n", err)
@@ -57,7 +64,7 @@ func runWithConfirm(args []string, stdout, stderr *os.File, convert convertFunc,
 	return 0
 }
 
-func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc) *urfavecli.Command {
+func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectMixModes selectMixModesFunc) *urfavecli.Command {
 	nozzleFlag := &urfavecli.StringFlag{
 		Name:     "nozzle",
 		Aliases:  []string{"n"},
@@ -74,6 +81,18 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 		Usage:     "override the built-in U1 baseline with `FILE`",
 		OnlyOnce:  true,
 		TakesFile: true,
+	}
+	mixModeFlag := &urfavecli.StringFlag{
+		Name:             "mix-mode",
+		Aliases:          []string{"m"},
+		Usage:            "use `MODE` for generated mixtures (ratio, cycle, match, or gradient)",
+		Value:            threemf.MixModeRatio.String(),
+		OnlyOnce:         true,
+		ValidateDefaults: true,
+		Validator: func(value string) error {
+			_, err := threemf.ParseMixMode(value)
+			return err
+		},
 	}
 	return &urfavecli.Command{
 		Name:      "btu",
@@ -117,6 +136,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				Usage:    "synthesize source colors from the four loaded filaments",
 				OnlyOnce: true,
 			},
+			mixModeFlag,
 			nozzleFlag,
 			templateFlag,
 		},
@@ -125,6 +145,10 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				return urfavecli.Exit("expected exactly one source 3MF", 2)
 			}
 			palette, err := threemf.ParsePalette(command.String("colors"))
+			if err != nil {
+				return urfavecli.Exit(err, 2)
+			}
+			mixMode, err := threemf.ParseMixMode(command.String("mix-mode"))
 			if err != nil {
 				return urfavecli.Exit(err, 2)
 			}
@@ -141,6 +165,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				Nozzle:       command.String("nozzle"),
 				Palette:      palette,
 				FullSpectrum: command.Bool("full-spectrum"),
+				MixMode:      mixMode,
 			}
 			convertRequest := func() (threemf.Report, error) {
 				return progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.Report, error) {
@@ -175,8 +200,32 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 					if confirmErr != nil {
 						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum", confirmErr), 1)
 					}
-					request.FullSpectrum = accepted
-					request.PreserveMaterialSlots = !accepted
+					if !accepted {
+						request.PreserveMaterialSlots = true
+						continue
+					}
+					request.FullSpectrum = true
+					if len(required.Colors) == 0 {
+						continue
+					}
+					rows, options := mixModeRows(required.Colors, request.MixMode)
+					selected, selectionErr := selectMixModes(ctx, stderr, rows, options)
+					if selectionErr != nil {
+						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum --mix-mode %s", selectionErr, request.MixMode), 1)
+					}
+					if len(selected) != len(required.Colors) {
+						return urfavecli.Exit(fmt.Errorf("mix mode selection returned %d rows for %d source colors", len(selected), len(required.Colors)), 1)
+					}
+					request.MaterialMixModes = make(map[int]threemf.MixMode)
+					for index, color := range required.Colors {
+						mode, parseErr := threemf.ParseMixMode(selected[index])
+						if parseErr != nil {
+							return urfavecli.Exit(parseErr, 1)
+						}
+						for _, material := range color.MaterialIDs {
+							request.MaterialMixModes[material] = mode
+						}
+					}
 					continue
 				}
 
@@ -205,6 +254,39 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			return nil
 		},
 	}
+}
+
+func mixModeRows(colors []threemf.MixModeColor, defaultMode threemf.MixMode) ([]progressui.MixModeRow, []progressui.MixModeOption) {
+	options := []progressui.MixModeOption{
+		{Label: "Ratio", Value: threemf.MixModeRatio.String()},
+		{Label: "Cycle", Value: threemf.MixModeCycle.String()},
+		{Label: "Match", Value: threemf.MixModeMatch.String()},
+		{Label: "Gradient", Value: threemf.MixModeGradient.String()},
+	}
+	selected := 0
+	for index, option := range options {
+		if option.Value == defaultMode.String() {
+			selected = index
+			break
+		}
+	}
+	rows := make([]progressui.MixModeRow, len(colors))
+	for index, color := range colors {
+		ids := make([]string, len(color.MaterialIDs))
+		for idIndex, material := range color.MaterialIDs {
+			ids[idIndex] = fmt.Sprintf("T%d", material)
+		}
+		state := "unused"
+		if color.Used {
+			state = "used"
+		}
+		rows[index] = progressui.MixModeRow{
+			Label:    fmt.Sprintf("%s (%s)", strings.Join(ids, "/"), state),
+			Color:    color.Color,
+			Selected: selected,
+		}
+	}
+	return rows, options
 }
 
 type plateGroup struct {

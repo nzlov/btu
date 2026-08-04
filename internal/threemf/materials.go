@@ -22,6 +22,13 @@ type materialPlan struct {
 	plates          []PlateReport
 }
 
+type materialPlanOptions struct {
+	fullSpectrum    bool
+	preserveSlots   bool
+	mixMode         MixMode
+	materialMixMode map[int]MixMode
+}
+
 type PlateReport struct {
 	Number  int
 	Name    string
@@ -43,9 +50,16 @@ func (plan materialPlan) colorSummary() string {
 	return plan.palette.String()
 }
 
+type MixModeColor struct {
+	MaterialIDs []int
+	Color       string
+	Used        bool
+}
+
 type FullSpectrumRequiredError struct {
 	ColorCount   int
 	NonBaseCount int
+	Colors       []MixModeColor
 }
 
 func (err *FullSpectrumRequiredError) Error() string {
@@ -55,8 +69,8 @@ func (err *FullSpectrumRequiredError) Error() string {
 	return fmt.Sprintf("source uses %d colors; full-spectrum mixing is required", err.ColorCount)
 }
 
-func planMaterials(source, template map[string]any, palette Palette, fullSpectrum, preserveSlots bool, usage projectMaterialUsage) (materialPlan, error) {
-	if fullSpectrum && preserveSlots {
+func planMaterials(source, template map[string]any, palette Palette, options materialPlanOptions, usage projectMaterialUsage) (materialPlan, error) {
+	if options.fullSpectrum && options.preserveSlots {
 		return materialPlan{}, fmt.Errorf("full-spectrum mixing and preserved material slots are mutually exclusive")
 	}
 	for _, key := range []string{"filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"} {
@@ -75,22 +89,27 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 	if firstMixed < 0 {
 		colors := stringSlice(source["filament_colour"])
 		usage = normalizeProjectMaterialUsage(usage, len(colors))
-		colorCount, nonBaseCount, err := inspectColors(colors)
+		colorCount, mixColors, err := inspectMixModeColors(colors, usage.Total)
 		if err != nil {
 			return materialPlan{}, err
 		}
-		if preserveSlots {
+		if options.preserveSlots {
 			return planPreservedMaterialSlots(colors)
 		}
-		if nonBaseCount > 0 && !fullSpectrum {
+		if len(mixColors) > 0 && !options.fullSpectrum {
 			return materialPlan{}, &FullSpectrumRequiredError{
 				ColorCount:   colorCount,
-				NonBaseCount: nonBaseCount,
+				NonBaseCount: len(mixColors),
+				Colors:       mixColors,
 			}
 		}
-		return planMappedMaterials(source, template, palette, usage)
+		modes, err := materialMixModes(len(colors), options.mixMode, options.materialMixMode)
+		if err != nil {
+			return materialPlan{}, err
+		}
+		return planMappedMaterials(source, template, palette, usage, modes)
 	}
-	if fullSpectrum || preserveSlots {
+	if options.fullSpectrum || options.preserveSlots || len(options.materialMixMode) > 0 {
 		return materialPlan{}, fmt.Errorf("conversion mode cannot replace a project that already has native mixed materials")
 	}
 
@@ -146,7 +165,11 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 		}
 		stableID := index - physicalCount + 1
 		gradient := sliceAt(gradients, index) == "1"
-		definition, err := makeDefinition(mappedComponents, weights, gradient, sliceAt(gradientRanges, index), stableID)
+		mode := MixModeRatio
+		if gradient {
+			mode = MixModeGradient
+		}
+		definition, err := makeDefinition(mappedComponents, weights, mode, sliceAt(gradientRanges, index), stableID)
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("mixed material T%d: %w", index+1, err)
 		}
@@ -169,7 +192,7 @@ func planMaterials(source, template map[string]any, palette Palette, fullSpectru
 	}, nil
 }
 
-func planMappedMaterials(source, template map[string]any, palette Palette, usage projectMaterialUsage) (materialPlan, error) {
+func planMappedMaterials(source, template map[string]any, palette Palette, usage projectMaterialUsage, modes []MixMode) (materialPlan, error) {
 	colors := stringSlice(source["filament_colour"])
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
@@ -185,11 +208,11 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		}
 		targetColors[index] = color
 	}
-	plans, err := selectPlatePlans(targetColors, usage, palette)
+	plans, err := selectPlatePlans(targetColors, usage, palette, modes)
 	if err != nil {
 		return materialPlan{}, err
 	}
-	recipes, err := selectProjectRecipes(targetColors, usage, plans, palette)
+	recipes, err := selectProjectRecipes(targetColors, usage, plans, palette, modes)
 	if err != nil {
 		return materialPlan{}, err
 	}
@@ -204,14 +227,15 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 			continue
 		}
 
-		signature := mixSignature(recipe.components, recipe.weights)
+		mode := modes[index]
+		signature := mixSignature(mode, recipe.components, recipe.weights)
 		if target, ok := mixedTargets[signature]; ok {
 			mapping[index+1] = target
 			continue
 		}
 
 		stableID := len(definitions) + 1
-		definition, err := makeDefinition(recipe.components, recipe.weights, false, "", stableID)
+		definition, err := makeDefinition(recipe.components, recipe.weights, mode, "", stableID)
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("source T%d target %s: %w", index+1, canonicalColor(targetColors[index]), err)
 		}
@@ -282,25 +306,60 @@ func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
 	}, nil
 }
 
-func inspectColors(colors []string) (int, int, error) {
+func inspectMixModeColors(colors []string, usage materialUsage) (int, []MixModeColor, error) {
+	result := make([]MixModeColor, 0, len(colors))
 	seen := make(map[string]bool, len(colors))
-	nonBaseCount := 0
+	byColor := make(map[string]int, len(colors))
+	colorCount := 0
 	for index, value := range colors {
 		color, err := parseColor(value)
 		if err != nil {
-			return 0, 0, fmt.Errorf("source T%d: %w", index+1, err)
+			return 0, nil, fmt.Errorf("source T%d: %w", index+1, err)
 		}
 		canonical := canonicalColor(color)
 		if seen[canonical] {
+			if resultIndex, exists := byColor[canonical]; exists {
+				result[resultIndex].MaterialIDs = append(result[resultIndex].MaterialIDs, index+1)
+				result[resultIndex].Used = result[resultIndex].Used || usage[index+1] > 0
+			}
 			continue
 		}
 		seen[canonical] = true
+		colorCount++
 		_, base := baseColorRole(color)
-		if !base {
-			nonBaseCount++
+		if base {
+			continue
 		}
+		byColor[canonical] = len(result)
+		result = append(result, MixModeColor{
+			MaterialIDs: []int{index + 1},
+			Color:       canonical,
+			Used:        usage[index+1] > 0,
+		})
 	}
-	return len(seen), nonBaseCount, nil
+	return colorCount, result, nil
+}
+
+func materialMixModes(count int, defaultMode MixMode, overrides map[int]MixMode) ([]MixMode, error) {
+	defaultMode, err := normalizeMixMode(defaultMode)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]MixMode, count)
+	for index := range result {
+		result[index] = defaultMode
+	}
+	for material, mode := range overrides {
+		if material < 1 || material > count {
+			return nil, fmt.Errorf("mix mode references unknown source T%d", material)
+		}
+		mode, err = normalizeMixMode(mode)
+		if err != nil {
+			return nil, fmt.Errorf("source T%d: %w", material, err)
+		}
+		result[material-1] = mode
+	}
+	return result, nil
 }
 
 func paletteCandidates(preferred Palette) []Palette {
@@ -346,14 +405,14 @@ func canonicalColor(color [3]int) string {
 	return fmt.Sprintf("#%02X%02X%02X", color[0], color[1], color[2])
 }
 
-func mixSignature(components, weights []int) string {
+func mixSignature(mode MixMode, components, weights []int) string {
 	componentText := make([]string, len(components))
 	weightText := make([]string, len(weights))
 	for index := range components {
 		componentText[index] = strconv.Itoa(components[index])
 		weightText[index] = strconv.Itoa(weights[index])
 	}
-	return strings.Join(componentText, "/") + ":" + strings.Join(weightText, "/")
+	return mode.String() + ":" + strings.Join(componentText, "/") + ":" + strings.Join(weightText, "/")
 }
 
 func hasEnabledValue(value any) bool {
@@ -376,10 +435,20 @@ func hasEnabledValue(value any) bool {
 	return false
 }
 
-func makeDefinition(components, weights []int, gradient bool, gradientRange string, stableID int) (string, error) {
-	if gradient {
+func makeDefinition(components, weights []int, mode MixMode, gradientRange string, stableID int) (string, error) {
+	mode, err := normalizeMixMode(mode)
+	if err != nil {
+		return "", err
+	}
+	if len(components) != len(weights) || len(components) < 2 || len(components) > 4 {
+		return "", fmt.Errorf("%s mixing requires two to four weighted components", mode)
+	}
+	if mode == MixModeGradient {
 		if len(components) != 2 {
 			return "", fmt.Errorf("gradient mixing with %d components cannot be represented by U1", len(components))
+		}
+		if gradientRange == "" {
+			gradientRange = "0.8000,0.2000"
 		}
 		parts := strings.Split(gradientRange, ",")
 		if len(parts) != 2 {
@@ -396,8 +465,26 @@ func makeDefinition(components, weights []int, gradient bool, gradientRange stri
 		return fmt.Sprintf("%d,%d,1,1,50,0,g,w,m0,z2,xa0,xb0,d0,o0,u%d,cm3,r1/%.4f/%.4f", components[0], components[1], stableID, start, end), nil
 	}
 
+	if mode == MixModeCycle {
+		pattern, mixB, err := makeCyclePattern(components, weights)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("1,2,1,1,%d,0,g,w,m2,z0,xa0,xb0,d0,o0,u%d,cm1,%s", mixB, stableID, pattern), nil
+	}
+	if mode == MixModeRatio && len(components) > 3 {
+		return "", fmt.Errorf("ratio mixing with %d components cannot be represented by U1", len(components))
+	}
 	if len(components) == 2 {
-		return fmt.Sprintf("%d,%d,1,1,%d,0,g,w,m2,z0,xa0,xb0,d0,o0,u%d,cm0", components[0], components[1], weights[1], stableID), nil
+		gradientIDs := ""
+		if mode == MixModeMatch {
+			gradientIDs = strconv.Itoa(components[0]) + strconv.Itoa(components[1])
+		}
+		cmMode := 0
+		if mode == MixModeMatch {
+			cmMode = 2
+		}
+		return fmt.Sprintf("%d,%d,1,1,%d,0,g%s,w,m2,z0,xa0,xb0,d0,o0,u%d,cm%d", components[0], components[1], weights[1], gradientIDs, stableID, cmMode), nil
 	}
 	componentText := make([]string, len(components))
 	weightText := make([]string, len(weights))
@@ -405,7 +492,11 @@ func makeDefinition(components, weights []int, gradient bool, gradientRange stri
 		componentText[index] = strconv.Itoa(components[index])
 		weightText[index] = strconv.Itoa(weights[index])
 	}
-	return fmt.Sprintf("%d,%d,1,1,50,0,g%s,w%s,m0,z0,xa0,xb0,d0,o0,u%d,cm0", components[0], components[1], strings.Join(componentText, ""), strings.Join(weightText, "/"), stableID), nil
+	cmMode := 0
+	if mode == MixModeMatch {
+		cmMode = 2
+	}
+	return fmt.Sprintf("%d,%d,1,1,50,0,g%s,w%s,m0,z0,xa0,xb0,d0,o0,u%d,cm%d", components[0], components[1], strings.Join(componentText, ""), strings.Join(weightText, "/"), stableID, cmMode), nil
 }
 
 func parseIDs(value string) ([]int, error) {

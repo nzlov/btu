@@ -39,6 +39,8 @@ type Request struct {
 	Palette               Palette
 	FullSpectrum          bool
 	PreserveMaterialSlots bool
+	MixMode               MixMode
+	MaterialMixModes      map[int]MixMode
 }
 
 type OutputExistsError struct {
@@ -123,7 +125,12 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	if err != nil {
 		return Report{}, err
 	}
-	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, request.FullSpectrum, request.PreserveMaterialSlots, usage)
+	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, materialPlanOptions{
+		fullSpectrum:    request.FullSpectrum,
+		preserveSlots:   request.PreserveMaterialSlots,
+		mixMode:         request.MixMode,
+		materialMixMode: request.MaterialMixModes,
+	}, usage)
 	if err != nil {
 		return Report{}, err
 	}

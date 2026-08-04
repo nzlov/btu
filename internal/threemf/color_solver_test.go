@@ -29,3 +29,30 @@ func TestPurpleRecipeImprovesFullSpectrumPreview(t *testing.T) {
 		t.Fatalf("preview %s has delta %.2f from %s", canonicalColor(recipe.preview), delta, canonicalColor(target))
 	}
 }
+
+func TestMixModesApplyTheirComponentRules(t *testing.T) {
+	target := [3]int{0x5E, 0x43, 0xB7}
+	palette, err := ParsePalette("cmyw")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ratio, ok := bestColorRecipeForMode(target, palette, MixModeRatio)
+	if !ok || len(ratio.components) > 3 {
+		t.Fatalf("ratio recipe = %+v, ok = %v", ratio, ok)
+	}
+	gradient, ok := bestColorRecipeForMode(target, palette, MixModeGradient)
+	if !ok || len(gradient.components) != 2 || gradient.weights[0] != 50 || gradient.weights[1] != 50 {
+		t.Fatalf("gradient recipe = %+v, ok = %v", gradient, ok)
+	}
+}
+
+func TestMixModesDoNotAffectDirectBaseColors(t *testing.T) {
+	palette := DefaultPalette()
+	for _, mode := range []MixMode{MixModeRatio, MixModeCycle, MixModeMatch, MixModeGradient} {
+		recipe, ok := bestColorRecipeForMode(roleRGB(ColorCyan), palette, mode)
+		if !ok || len(recipe.components) != 1 || recipe.components[0] != 1 {
+			t.Fatalf("%s recipe = %+v, ok = %v", mode, recipe, ok)
+		}
+	}
+}
