@@ -74,7 +74,7 @@ func TestOutputDefaultsNextToSource(t *testing.T) {
 func TestFlagsReachConversionRequest(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	var request threemf.Request
-	status := run([]string{"-o", "output.3mf", "-r", "-c", "cmyb", "-f", "-m", "gradient", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+	status := run([]string{"-o", "output.3mf", "-r", "-c", "bmcy", "-f", "-m", "gradient", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		request = got
 		return threemf.Report{Mode: "full-spectrum", Output: got.Output}, nil
 	})
@@ -84,7 +84,7 @@ func TestFlagsReachConversionRequest(t *testing.T) {
 	if request.Source != "source.3mf" || request.Output != "output.3mf" || request.Template != "custom.3mf" || request.Nozzle != "0.8" || !request.Replace || !request.FullSpectrum || request.MixMode != threemf.MixModeGradient {
 		t.Fatalf("unexpected request: %+v", request)
 	}
-	wantSlots := [4]threemf.ColorRole{threemf.ColorCyan, threemf.ColorMagenta, threemf.ColorYellow, threemf.ColorBlack}
+	wantSlots := [4]threemf.ColorRole{threemf.ColorBlack, threemf.ColorMagenta, threemf.ColorCyan, threemf.ColorYellow}
 	if request.Palette.Slots != wantSlots {
 		t.Fatalf("palette = %v, want %v", request.Palette.Slots, wantSlots)
 	}
@@ -191,7 +191,7 @@ func TestInvalidColorsAreRejectedBeforeConversion(t *testing.T) {
 	if status != 2 || called {
 		t.Fatalf("status = %d, called = %v", status, called)
 	}
-	if got := readOutput(t, stderr); !strings.Contains(got, "slots 1-3 are fixed") {
+	if got := readOutput(t, stderr); !strings.Contains(got, "appears more than once") {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -223,6 +223,22 @@ func TestPrintsPlateNameAndT4ReplacementStep(t *testing.T) {
 		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
 	}
 	if got := readOutput(t, stdout); !strings.Contains(got, "replace T4 gray -> black (cmyb): plate 2 - body") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestPrintsReplacementStepForCustomNeutralSlot(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	status := run([]string{"--colors", "bmcy", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+		return threemf.Report{
+			Mode: "full-spectrum", Output: request.Output, Colors: "bmcy",
+			Plates: []threemf.PlateReport{{Number: 2, Name: "body", Colors: "wmcy", Neutral: threemf.ColorWhite}},
+		}, nil
+	})
+	if status != 0 {
+		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
+	}
+	if got := readOutput(t, stdout); !strings.Contains(got, "replace T1 black -> white (wmcy): plate 2 - body") {
 		t.Fatalf("stdout = %q", got)
 	}
 }

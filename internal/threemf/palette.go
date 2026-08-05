@@ -29,15 +29,23 @@ func DefaultPalette() Palette {
 
 func ParsePalette(order string) (Palette, error) {
 	order = strings.ToLower(strings.TrimSpace(order))
-	if len(order) != 4 || order[:3] != "cmy" || !strings.ContainsRune("gwb", rune(order[3])) {
-		return Palette{}, fmt.Errorf("colors must be cmyg, cmyw, or cmyb; slots 1-3 are fixed to c, m, and y")
+	if len(order) != 4 {
+		return Palette{}, fmt.Errorf("colors requires exactly four characters: c, m, y, and one of g, w, or b")
 	}
 	palette := Palette{}
+	seen := make(map[ColorRole]bool, len(palette.Slots))
 	for index := range order {
-		role, _ := roleFromCode(order[index])
+		role, ok := roleFromCode(order[index])
+		if !ok {
+			return Palette{}, fmt.Errorf("unsupported color code %q; use c, m, y, g, w, or b", order[index:index+1])
+		}
+		if seen[role] {
+			return Palette{}, fmt.Errorf("color code %q appears more than once", order[index:index+1])
+		}
+		seen[role] = true
 		palette.Slots[index] = role
 	}
-	return palette, nil
+	return palette.normalized()
 }
 
 func (palette Palette) normalized() (Palette, error) {
@@ -51,24 +59,41 @@ func (palette Palette) normalized() (Palette, error) {
 	if allEmpty {
 		return DefaultPalette(), nil
 	}
-	if palette.Slots[0] != ColorCyan || palette.Slots[1] != ColorMagenta || palette.Slots[2] != ColorYellow ||
-		(palette.Slots[3] != ColorGray && palette.Slots[3] != ColorWhite && palette.Slots[3] != ColorBlack) {
-		return Palette{}, fmt.Errorf("palette must keep c, m, and y in slots 1-3 and use g, w, or b in slot 4")
+	seen := make(map[ColorRole]bool, len(palette.Slots))
+	for _, role := range palette.Slots {
+		if !isColorRole(role) || seen[role] {
+			return Palette{}, fmt.Errorf("palette must contain c, m, y, and exactly one of g, w, or b")
+		}
+		seen[role] = true
+	}
+	if !seen[ColorCyan] || !seen[ColorMagenta] || !seen[ColorYellow] ||
+		!(seen[ColorGray] || seen[ColorWhite] || seen[ColorBlack]) {
+		return Palette{}, fmt.Errorf("palette must contain c, m, y, and exactly one of g, w, or b")
 	}
 	return palette, nil
 }
 
-func (palette Palette) neutralRole() ColorRole {
-	return palette.Slots[3]
+func (palette Palette) Neutral() ColorRole {
+	for _, role := range palette.Slots {
+		if role == ColorGray || role == ColorWhite || role == ColorBlack {
+			return role
+		}
+	}
+	return ""
 }
 
-func (palette Palette) slot(role ColorRole) int {
+func (palette Palette) Slot(role ColorRole) int {
 	for index, candidate := range palette.Slots {
 		if candidate == role {
 			return index + 1
 		}
 	}
 	return 0
+}
+
+func (palette Palette) withNeutral(neutral ColorRole) Palette {
+	palette.Slots[palette.Slot(palette.Neutral())-1] = neutral
+	return palette
 }
 
 func (palette Palette) outputColors() []string {
@@ -165,7 +190,7 @@ func decomposeCMY(color [3]int, palette Palette) []colorComponent {
 	g := float64(color[1]) / 255
 	b := float64(color[2]) / 255
 	if r == 0 && g == 0 && b == 0 {
-		if palette.slot(ColorBlack) > 0 {
+		if palette.Slot(ColorBlack) > 0 {
 			return []colorComponent{{role: ColorBlack, weight: 1}}
 		}
 		return []colorComponent{
@@ -198,7 +223,7 @@ func decomposeCMY(color [3]int, palette Palette) []colorComponent {
 	}
 
 	components := []colorComponent{
-		{role: palette.neutralRole(), weight: white},
+		{role: palette.Neutral(), weight: white},
 		{role: ColorMagenta, weight: r},
 		{role: ColorYellow, weight: yellow},
 		{role: ColorCyan, weight: b},

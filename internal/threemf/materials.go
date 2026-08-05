@@ -194,7 +194,7 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 		virtualMixes:    len(definitions),
 		hasMultiColor:   hasMultiColor,
 		palette:         palette,
-		plates:          reportsForNeutral(usage, palette.neutralRole()),
+		plates:          reportsForNeutral(usage, palette),
 	}, nil
 }
 
@@ -269,24 +269,24 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		hasMultiColor:   hasMultiColor,
 		forceLocalZ:     len(definitions) > 0,
 		palette:         palette,
-		plates:          reportsFromPlatePlans(plans),
+		plates:          reportsFromPlatePlans(plans, palette),
 	}, nil
 }
 
-func reportsForNeutral(usage projectMaterialUsage, neutral ColorRole) []PlateReport {
+func reportsForNeutral(usage projectMaterialUsage, palette Palette) []PlateReport {
 	plans := make([]platePlan, 0, len(usage.Plates))
 	for _, plate := range usage.Plates {
-		plans = append(plans, platePlan{id: plate.ID, name: plate.Name, neutral: neutral})
+		plans = append(plans, platePlan{id: plate.ID, name: plate.Name, neutral: palette.Neutral()})
 	}
-	return reportsFromPlatePlans(plans)
+	return reportsFromPlatePlans(plans, palette)
 }
 
-func reportsFromPlatePlans(plans []platePlan) []PlateReport {
+func reportsFromPlatePlans(plans []platePlan, palette Palette) []PlateReport {
 	reports := make([]PlateReport, len(plans))
 	for index, plan := range plans {
 		reports[index] = PlateReport{
 			Number: plan.id, Name: plan.name, Neutral: plan.neutral,
-			Colors: paletteWithNeutral(plan.neutral).String(),
+			Colors: palette.withNeutral(plan.neutral).String(),
 		}
 	}
 	return reports
@@ -375,7 +375,7 @@ func materialMixModes(count int, defaultMode MixMode, overrides map[int]MixMode)
 }
 
 func paletteCandidates(preferred Palette) []Palette {
-	roles := []ColorRole{preferred.neutralRole(), ColorGray, ColorWhite, ColorBlack}
+	roles := []ColorRole{preferred.Neutral(), ColorGray, ColorWhite, ColorBlack}
 	result := make([]Palette, 0, 3)
 	seen := make(map[ColorRole]bool, 3)
 	for _, role := range roles {
@@ -383,20 +383,20 @@ func paletteCandidates(preferred Palette) []Palette {
 			continue
 		}
 		seen[role] = true
-		result = append(result, Palette{Slots: [4]ColorRole{ColorCyan, ColorMagenta, ColorYellow, role}})
+		result = append(result, preferred.withNeutral(role))
 	}
 	return result
 }
 
 func colorParts(color [3]int, palette Palette) ([]colorComponent, bool) {
 	if role, base := baseColorRole(color); base {
-		if palette.slot(role) > 0 {
+		if palette.Slot(role) > 0 {
 			return []colorComponent{{role: role, weight: 1}}, true
 		}
-		if role == ColorBlack && palette.slot(ColorCyan) > 0 && palette.slot(ColorMagenta) > 0 && palette.slot(ColorYellow) > 0 {
+		if role == ColorBlack && palette.Slot(ColorCyan) > 0 && palette.Slot(ColorMagenta) > 0 && palette.Slot(ColorYellow) > 0 {
 			return []colorComponent{{role: ColorMagenta, weight: 1}, {role: ColorYellow, weight: 1}, {role: ColorCyan, weight: 1}}, true
 		}
-		if role == ColorGray && palette.slot(ColorWhite) > 0 && palette.slot(ColorBlack) > 0 {
+		if role == ColorGray && palette.Slot(ColorWhite) > 0 && palette.Slot(ColorBlack) > 0 {
 			return []colorComponent{{role: ColorWhite, weight: 1}, {role: ColorBlack, weight: 1}}, true
 		}
 		return nil, false
@@ -406,7 +406,7 @@ func colorParts(color [3]int, palette Palette) ([]colorComponent, bool) {
 		return nil, false
 	}
 	for _, part := range parts {
-		if palette.slot(part.role) == 0 {
+		if palette.Slot(part.role) == 0 {
 			return nil, false
 		}
 	}
@@ -678,9 +678,9 @@ func mapPhysicalMaterials(source, template map[string]any, count int, palette Pa
 		if role, neutral := neutralColorRole(color); neutral {
 			switch role {
 			case ColorWhite:
-				bestSlot = palette.slot(ColorBlack)
+				bestSlot = palette.Slot(ColorBlack)
 			case ColorBlack:
-				bestSlot = palette.slot(ColorWhite)
+				bestSlot = palette.Slot(ColorWhite)
 			}
 		}
 		if bestSlot > 0 && !strings.EqualFold(sourceTypes[material-1], templateTypes[bestSlot-1]) {

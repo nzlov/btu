@@ -12,23 +12,25 @@ func TestDefaultPaletteIsCMYG(t *testing.T) {
 	}
 }
 
-func TestParsePaletteOrderWithBlack(t *testing.T) {
-	palette, err := ParsePalette("cmyb")
+func TestParsePaletteCustomOrderWithBlack(t *testing.T) {
+	palette, err := ParsePalette("bmcy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if palette.slot(ColorCyan) != 1 || palette.slot(ColorMagenta) != 2 || palette.slot(ColorYellow) != 3 || palette.slot(ColorBlack) != 4 {
+	if palette.Slot(ColorBlack) != 1 || palette.Slot(ColorMagenta) != 2 || palette.Slot(ColorCyan) != 3 || palette.Slot(ColorYellow) != 4 {
 		t.Fatalf("unexpected slots: %v", palette.Slots)
 	}
-	wantColors := []string{"#0000FF", "#FF0000", "#FFFF00", "#000000"}
+	wantColors := []string{"#000000", "#FF0000", "#0000FF", "#FFFF00"}
 	if got := palette.outputColors(); !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("output colors = %v, want %v", got, wantColors)
 	}
 }
 
-func TestParsePaletteRejectsMovingCMY(t *testing.T) {
-	if _, err := ParsePalette("wmmb"); err == nil {
-		t.Fatal("expected fixed CMY order error")
+func TestParsePaletteRejectsInvalidColorSet(t *testing.T) {
+	for _, order := range []string{"cmy", "cmyc", "cmgw", "cmyx"} {
+		if _, err := ParsePalette(order); err == nil {
+			t.Fatalf("ParsePalette(%q) unexpectedly succeeded", order)
+		}
 	}
 }
 

@@ -121,7 +121,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			&urfavecli.StringFlag{
 				Name:             "colors",
 				Aliases:          []string{"c"},
-				Usage:            "keep CMY in slots 1-3 and set preview T4 with `ORDER` (cmyg, cmyw, or cmyb)",
+				Usage:            "set T1-T4 preview colors with `ORDER` containing cmy and one of gwb",
 				Value:            "cmyg",
 				OnlyOnce:         true,
 				ValidateDefaults: true,
@@ -249,7 +249,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				fmt.Fprintf(stdout, "  source T%d -> U1 T%d\n", sourceID, report.PhysicalMapping[sourceID])
 			}
 			if len(report.Plates) > 0 {
-				printPlateSteps(stdout, report.Plates, request.Palette.Slots[3])
+				printPlateSteps(stdout, report.Plates, request.Palette)
 			}
 			return nil
 		},
@@ -295,7 +295,9 @@ type plateGroup struct {
 	plates  []threemf.PlateReport
 }
 
-func printPlateSteps(output *os.File, plates []threemf.PlateReport, initial threemf.ColorRole) {
+func printPlateSteps(output *os.File, plates []threemf.PlateReport, palette threemf.Palette) {
+	initial := palette.Neutral()
+	neutralSlot := palette.Slot(initial)
 	groups := groupPlatesForPrinting(plates, initial)
 	changes := 0
 	current := initial
@@ -310,13 +312,13 @@ func printPlateSteps(output *os.File, plates []threemf.PlateReport, initial thre
 	if changes == 1 {
 		label = "change"
 	}
-	fmt.Fprintf(output, "Printing steps (recommended order, %d T4 %s):\n", changes, label)
+	fmt.Fprintf(output, "Printing steps (recommended order, %d T%d %s):\n", changes, neutralSlot, label)
 	current = initial
 	for _, group := range groups {
 		if group.neutral == current {
-			fmt.Fprintf(output, "  keep T4 %s (%s): ", group.neutral, group.colors)
+			fmt.Fprintf(output, "  keep T%d %s (%s): ", neutralSlot, group.neutral, group.colors)
 		} else {
-			fmt.Fprintf(output, "  replace T4 %s -> %s (%s): ", current, group.neutral, group.colors)
+			fmt.Fprintf(output, "  replace T%d %s -> %s (%s): ", neutralSlot, current, group.neutral, group.colors)
 			current = group.neutral
 		}
 		for index, plate := range group.plates {

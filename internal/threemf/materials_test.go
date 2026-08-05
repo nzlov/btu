@@ -68,7 +68,7 @@ func TestPlanPlacesVirtualMaterialsAfterTemplateSlots(t *testing.T) {
 	}
 }
 
-func TestPlanFullSpectrumWithBlackPreviewNeutral(t *testing.T) {
+func TestPlanFullSpectrumWithCustomColorOrder(t *testing.T) {
 	source := map[string]any{
 		"filament_colour": []string{"#FFFFFF", "#FF0000", "#00FF00"},
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
@@ -77,7 +77,7 @@ func TestPlanFullSpectrumWithBlackPreviewNeutral(t *testing.T) {
 		"filament_colour": []string{"#FFFFFF", "#FF0000", "#FFFF00", "#0000FF"},
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
 	}
-	palette, err := ParsePalette("cmyb")
+	palette, err := ParsePalette("bmcy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,11 +89,11 @@ func TestPlanFullSpectrumWithBlackPreviewNeutral(t *testing.T) {
 	if plan.mode != "full-spectrum" || !plan.forceLocalZ || plan.virtualMixes != 1 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	wantMapping := map[int]int{1: 4, 2: 2, 3: 5}
+	wantMapping := map[int]int{1: 1, 2: 2, 3: 5}
 	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
 		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
 	}
-	if plan.palette.String() != "cmyb" || len(plan.plates) != 1 || plan.plates[0].Colors != "cmyw" {
+	if plan.palette.String() != "bmcy" || len(plan.plates) != 1 || plan.plates[0].Colors != "wmcy" {
 		t.Fatalf("palette plan = %+v, plates = %+v", plan.palette, plan.plates)
 	}
 }

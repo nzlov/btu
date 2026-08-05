@@ -60,7 +60,7 @@ func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Pal
 			}
 			if betterPlateScore(score, bestScore) {
 				bestScore = score
-				bestNeutral = candidate.neutralRole()
+				bestNeutral = candidate.Neutral()
 			}
 		}
 		if bestNeutral == "" {
@@ -133,10 +133,10 @@ func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []p
 			recipe, ok = bestColorRecipeForMode(color, preferred, mode)
 		case 1:
 			for neutral := range neutrals {
-				recipe, ok = bestColorRecipeForMode(color, paletteWithNeutral(neutral), mode)
+				recipe, ok = bestColorRecipeForMode(color, preferred.withNeutral(neutral), mode)
 			}
 		default:
-			recipe, ok = bestCMYRecipeForMode(color, mode)
+			recipe, ok = bestCMYRecipeForMode(color, preferred, mode)
 		}
 		if !ok {
 			return nil, fmt.Errorf("source T%d target %s has no compatible recipe", index+1, canonicalColor(color))
@@ -151,8 +151,4 @@ func mixModeAt(modes []MixMode, material int) MixMode {
 		return modes[material-1]
 	}
 	return MixModeRatio
-}
-
-func paletteWithNeutral(neutral ColorRole) Palette {
-	return Palette{Slots: [4]ColorRole{ColorCyan, ColorMagenta, ColorYellow, neutral}}
 }

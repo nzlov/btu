@@ -43,7 +43,7 @@ func bestColorRecipeForMode(target [3]int, palette Palette, mode MixMode) (color
 		return result.recipe, result.ok
 	}
 	if role, base := baseColorRole(target); base {
-		if slot := palette.slot(role); slot > 0 {
+		if slot := palette.Slot(role); slot > 0 {
 			recipe := directColorRecipe(target, role, slot)
 			colorRecipeCache.Store(key, cachedColorRecipe{recipe: recipe, ok: true})
 			return recipe, true
@@ -65,7 +65,7 @@ func bestColorRecipeForMode(target [3]int, palette Palette, mode MixMode) (color
 
 func calculateBestColorRecipe(target [3]int, palette Palette) (colorRecipe, bool) {
 	if role, base := baseColorRole(target); base {
-		if slot := palette.slot(role); slot > 0 {
+		if slot := palette.Slot(role); slot > 0 {
 			return directColorRecipe(target, role, slot), true
 		}
 	}
@@ -73,26 +73,25 @@ func calculateBestColorRecipe(target [3]int, palette Palette) (colorRecipe, bool
 }
 
 func bestCMYRecipe(target [3]int) (colorRecipe, bool) {
-	palette := DefaultPalette()
-	if role, base := baseColorRole(target); base {
-		if slot := palette.slot(role); slot > 0 && slot <= 3 {
-			return directColorRecipe(target, role, slot), true
-		}
-	}
-	return searchColorRecipe(target, palette, []int{1, 2, 3})
+	return bestCMYRecipeForMode(target, DefaultPalette(), MixModeRatio)
 }
 
-func bestCMYRecipeForMode(target [3]int, mode MixMode) (colorRecipe, bool) {
-	palette := DefaultPalette()
+func bestCMYRecipeForMode(target [3]int, palette Palette, mode MixMode) (colorRecipe, bool) {
+	slots := make([]int, 0, 3)
+	for index, role := range palette.Slots {
+		if role == ColorCyan || role == ColorMagenta || role == ColorYellow {
+			slots = append(slots, index+1)
+		}
+	}
 	if role, base := baseColorRole(target); base {
-		if slot := palette.slot(role); slot > 0 && slot <= 3 {
+		if slot := palette.Slot(role); (role == ColorCyan || role == ColorMagenta || role == ColorYellow) && slot > 0 {
 			return directColorRecipe(target, role, slot), true
 		}
 	}
 	if mode == MixModeGradient {
-		return searchGradientRecipe(target, palette, []int{1, 2, 3})
+		return searchGradientRecipe(target, palette, slots)
 	}
-	return searchColorRecipeWithLimit(target, palette, []int{1, 2, 3}, 3)
+	return searchColorRecipeWithLimit(target, palette, slots, 3)
 }
 
 func searchColorRecipe(target [3]int, palette Palette, slots []int) (colorRecipe, bool) {
