@@ -25,6 +25,19 @@ automatically converted into U1 Full Spectrum mixtures.
   retaining plain non-interactive output and verifying the temporary 3MF before
   replacing an existing file.
 
+## Conversion comparison
+
+The example below shows the same painted model before and after conversion.
+The source project uses a Bambu Lab A1 profile with five source materials. The
+converted project uses the Snapmaker U1, maps directly available colors to the
+four physical filament slots, and adds two Full Spectrum virtual materials for
+the remaining colors. Model geometry, painting, and the source layer heights
+are preserved.
+
+| Before: Bambu Lab A1 project | After: Snapmaker U1 project converted by `btu` |
+| --- | --- |
+| ![Bambu Lab A1 project before conversion](docs/images/old.png) | ![Snapmaker U1 project after btu conversion](docs/images/btu.png) |
+
 The built-in U1 baselines supply printer, process, nozzle, and U1-coupled
 extrusion settings for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies
 geometry, layer height, material profiles, material references, face painting,
@@ -192,7 +205,12 @@ layers across the whole object and infill. Answering yes enables all three
 Local-Z options; answering no disables them. Non-interactive runs must pass
 either `--subdivide-layer-height` or `--no-subdivide-layer-height`.
 Full-spectrum output also sets the wipe-tower purge volume (`prime_volume`) to
-`20`.
+`20` mm^3. If conversion changes any supported process setting from the
+selected U1 baseline, `btu` embeds a project process preset named `btu`. That
+preset inherits the selected U1 system preset and stores only the changed
+values, such as mixed-material definitions, Local-Z options, purge volume, or
+source layer heights. If no supported process setting changes, the output keeps
+the selected system preset and does not create a redundant project preset.
 Non-interactive runs return an error with instructions to pass
 `--full-spectrum`; `--mix-mode` then applies one mode to every generated mixture.
 
