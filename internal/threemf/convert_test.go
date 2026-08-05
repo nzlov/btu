@@ -84,6 +84,7 @@ func TestConvertNativeMixedProject(t *testing.T) {
 		"dithering_local_z_mode":              "0",
 		"dithering_local_z_infill":            "0",
 		"dithering_local_z_direct_multicolor": "0",
+		"prime_volume":                        "45",
 	}
 	sourceSettings := map[string]any{
 		"filament_colour":                []string{"#FF0000", "#FFFFFF", "#0000FF", "#808080"},
@@ -122,6 +123,9 @@ func TestConvertNativeMixedProject(t *testing.T) {
 	}
 	if got := settings["layer_height"]; got != "0.1" {
 		t.Fatalf("layer_height = %v", got)
+	}
+	if got := settings["prime_volume"]; got != "45" {
+		t.Fatalf("prime_volume = %v, want 45", got)
 	}
 	wantDefinition := "2,4,1,1,50,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0"
 	if got := settings["mixed_filament_definitions"]; got != wantDefinition {
@@ -165,9 +169,10 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	})
 
 	report, err := Convert(context.Background(), Request{
-		Source:       sourcePath,
-		Output:       outputPath,
-		FullSpectrum: true,
+		Source:               sourcePath,
+		Output:               outputPath,
+		FullSpectrum:         true,
+		SubdivideLayerHeight: true,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +209,66 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	}
 	if got := readTestMember(t, outputPath, sliceInfoName); !strings.Contains(got, "X-BBL-Client-Type") {
 		t.Fatalf("built-in slice info was not used: %s", got)
+	}
+}
+
+func TestConvertFullSpectrumAppliesLayerHeightSubdivisionChoice(t *testing.T) {
+	tests := []struct {
+		name       string
+		subdivide  bool
+		wantOption string
+		colors     []string
+	}{
+		{name: "enabled", subdivide: true, wantOption: "1"},
+		{name: "disabled", subdivide: false, wantOption: "0"},
+		{name: "enabled without virtual mixes", subdivide: true, wantOption: "1", colors: []string{"#0000FF", "#FF0000", "#FFFF00", "#808080"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			sourcePath := filepath.Join(directory, "source.3mf")
+			outputPath := filepath.Join(directory, "output.3mf")
+			colors := test.colors
+			if len(colors) == 0 {
+				colors = []string{"#FFFFFF", "#FF0000", "#00FF00"}
+			}
+			types := make([]string, len(colors))
+			for index := range types {
+				types[index] = "PLA"
+			}
+			writeTest3MF(t, sourcePath, map[string]any{
+				"filament_colour":             colors,
+				"filament_type":               types,
+				"nozzle_diameter":             []string{"0.4"},
+				"enable_mixed_color_sublayer": "1",
+			}, map[string]string{
+				mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+				modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="2"/><metadata key="extruder" value="3"/></config>`,
+			})
+
+			_, err := Convert(context.Background(), Request{
+				Source:               sourcePath,
+				Output:               outputPath,
+				FullSpectrum:         true,
+				SubdivideLayerHeight: test.subdivide,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := readTestJSONMember(t, outputPath, projectSettingsName)
+			if got := settings["prime_volume"]; got != "20" {
+				t.Fatalf("prime_volume = %v, want 20", got)
+			}
+			for _, key := range []string{
+				"dithering_local_z_mode",
+				"dithering_local_z_whole_objects",
+				"dithering_local_z_infill",
+			} {
+				if got := settings[key]; got != test.wantOption {
+					t.Fatalf("%s = %v, want %s", key, got, test.wantOption)
+				}
+			}
+		})
 	}
 }
 

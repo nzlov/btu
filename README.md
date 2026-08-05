@@ -66,6 +66,7 @@ Options:
 | `--colors ORDER` | `-c ORDER` | no | Set the current T1-T4 color order using four distinct codes from `c`, `m`, `y`, `g`, `w`, and `b` |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
 | `--mix-mode MODE` | `-m MODE` | no | Set generated mixtures to `ratio`, `cycle`, `match`, or `gradient` (default: `ratio`) |
+| `--[no-]subdivide-layer-height` | | no | Enable or disable mixed-color layer-height subdivision for the whole object and infill |
 | `--nozzle DIAMETER_MM` | `-n DIAMETER_MM` | no | Force a built-in baseline; accepts `0.2`, `0.4`, `0.6`, or `0.8` (millimeters) |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
 
@@ -162,6 +163,7 @@ Printing steps (recommended order, 2 T4 changes):
 ./btu \
     --output ~/Downloads/model-full-spectrum.3mf \
     --full-spectrum \
+    --subdivide-layer-height \
     --mix-mode match \
     ~/Downloads/model.3mf
 ```
@@ -184,6 +186,13 @@ color's mode, and Enter to apply. Direct base colors are not listed.
 Answering no creates one ordinary material slot for every source material,
 keeps the source T1...Tn order and per-material settings, and creates no virtual
 mixtures. This non-mixed result is not limited to four logical material slots.
+Whenever full-spectrum conversion is enabled and neither layer-height flag was
+supplied, an interactive terminal then asks whether to subdivide mixed-color
+layers across the whole object and infill. Answering yes enables all three
+Local-Z options; answering no disables them. Non-interactive runs must pass
+either `--subdivide-layer-height` or `--no-subdivide-layer-height`.
+Full-spectrum output also sets the wipe-tower purge volume (`prime_volume`) to
+`20`.
 Non-interactive runs return an error with instructions to pass
 `--full-spectrum`; `--mix-mode` then applies one mode to every generated mixture.
 

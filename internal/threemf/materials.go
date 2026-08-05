@@ -17,7 +17,6 @@ type materialPlan struct {
 	definitions     string
 	virtualMixes    int
 	hasMultiColor   bool
-	forceLocalZ     bool
 	preserveSlots   bool
 	palette         Palette
 	plates          []PlateReport
@@ -271,7 +270,6 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		definitions:     strings.Join(definitions, ";"),
 		virtualMixes:    len(definitions),
 		hasMultiColor:   hasMultiColor,
-		forceLocalZ:     len(definitions) > 0,
 		palette:         palette,
 		plates:          reportsFromPlatePlans(plans, palette),
 	}, nil

@@ -94,6 +94,11 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			return err
 		},
 	}
+	subdivideLayerHeightFlag := &urfavecli.BoolWithInverseFlag{
+		Name:     "subdivide-layer-height",
+		Usage:    "subdivide mixed-color layers across the whole object and infill",
+		OnlyOnce: true,
+	}
 	return &urfavecli.Command{
 		Name:      "btu",
 		Usage:     "convert Bambu Studio 3MF materials for Snapmaker U1",
@@ -137,6 +142,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				OnlyOnce: true,
 			},
 			mixModeFlag,
+			subdivideLayerHeightFlag,
 			nozzleFlag,
 			templateFlag,
 		},
@@ -158,15 +164,17 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				output = defaultOutputPath(source)
 			}
 			request := threemf.Request{
-				Source:       source,
-				Template:     command.String("template"),
-				Output:       output,
-				Replace:      command.Bool("replace"),
-				Nozzle:       command.String("nozzle"),
-				Palette:      palette,
-				FullSpectrum: command.Bool("full-spectrum"),
-				MixMode:      mixMode,
+				Source:               source,
+				Template:             command.String("template"),
+				Output:               output,
+				Replace:              command.Bool("replace"),
+				Nozzle:               command.String("nozzle"),
+				Palette:              palette,
+				FullSpectrum:         command.Bool("full-spectrum"),
+				SubdivideLayerHeight: command.Bool("subdivide-layer-height"),
+				MixMode:              mixMode,
 			}
+			subdivideLayerHeightSelected := command.IsSet("subdivide-layer-height")
 			convertRequest := func() (threemf.Report, error) {
 				return progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.Report, error) {
 					return convert(ctx, request, func(event threemf.Progress) {
@@ -176,6 +184,14 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			}
 			var report threemf.Report
 			for {
+				if request.FullSpectrum && !subdivideLayerHeightSelected {
+					accepted, confirmErr := confirm(ctx, stderr, "Enable mixed-color layer-height subdivision across the whole object and infill?")
+					if confirmErr != nil {
+						return urfavecli.Exit(fmt.Errorf("%w; rerun with --subdivide-layer-height or --no-subdivide-layer-height", confirmErr), 1)
+					}
+					request.SubdivideLayerHeight = accepted
+					subdivideLayerHeightSelected = true
+				}
 				report, err = convertRequest()
 				if err == nil {
 					break

@@ -24,6 +24,7 @@ func TestHelpReturnsSuccess(t *testing.T) {
 		"--colors ORDER, -c ORDER",
 		"--full-spectrum, -f",
 		"--mix-mode MODE, -m MODE",
+		"--[no-]subdivide-layer-height",
 		"--nozzle DIAMETER_MM, -n DIAMETER_MM",
 		"allowed: 0.2, 0.4, 0.6, 0.8",
 		"--template FILE, -t FILE",
@@ -74,19 +75,79 @@ func TestOutputDefaultsNextToSource(t *testing.T) {
 func TestFlagsReachConversionRequest(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	var request threemf.Request
-	status := run([]string{"-o", "output.3mf", "-r", "-c", "bmcy", "-f", "-m", "gradient", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+	status := run([]string{"-o", "output.3mf", "-r", "-c", "bmcy", "-f", "--subdivide-layer-height", "-m", "gradient", "-n", "0.8", "-t", "custom.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, got threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		request = got
 		return threemf.Report{Mode: "full-spectrum", Output: got.Output}, nil
 	})
 	if status != 0 {
 		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
 	}
-	if request.Source != "source.3mf" || request.Output != "output.3mf" || request.Template != "custom.3mf" || request.Nozzle != "0.8" || !request.Replace || !request.FullSpectrum || request.MixMode != threemf.MixModeGradient {
+	if request.Source != "source.3mf" || request.Output != "output.3mf" || request.Template != "custom.3mf" || request.Nozzle != "0.8" || !request.Replace || !request.FullSpectrum || !request.SubdivideLayerHeight || request.MixMode != threemf.MixModeGradient {
 		t.Fatalf("unexpected request: %+v", request)
 	}
 	wantSlots := [4]threemf.ColorRole{threemf.ColorBlack, threemf.ColorMagenta, threemf.ColorCyan, threemf.ColorYellow}
 	if request.Palette.Slots != wantSlots {
 		t.Fatalf("palette = %v, want %v", request.Palette.Slots, wantSlots)
+	}
+}
+
+func TestFullSpectrumAsksForLayerHeightSubdivision(t *testing.T) {
+	tests := []struct {
+		name     string
+		accepted bool
+	}{
+		{name: "enabled", accepted: true},
+		{name: "disabled", accepted: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr := tempOutputs(t)
+			confirmed := false
+			status := runWithPrompts(
+				[]string{"--full-spectrum", "source.3mf"},
+				stdout,
+				stderr,
+				func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+					if request.SubdivideLayerHeight != test.accepted {
+						t.Fatalf("subdivide layer height = %v, want %v", request.SubdivideLayerHeight, test.accepted)
+					}
+					return threemf.Report{Mode: "full-spectrum", Output: request.Output}, nil
+				},
+				func(_ context.Context, _ *os.File, prompt string) (bool, error) {
+					confirmed = true
+					if !strings.Contains(prompt, "layer-height subdivision") || !strings.Contains(prompt, "whole object and infill") {
+						t.Fatalf("prompt = %q", prompt)
+					}
+					return test.accepted, nil
+				},
+				unexpectedMixModeSelection,
+			)
+			if status != 0 || !confirmed {
+				t.Fatalf("status = %d, confirmed = %v; stderr = %s", status, confirmed, readOutput(t, stderr))
+			}
+		})
+	}
+}
+
+func TestNoSubdivideLayerHeightFlagSkipsPrompt(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	status := runWithPrompts(
+		[]string{"--full-spectrum", "--no-subdivide-layer-height", "source.3mf"},
+		stdout,
+		stderr,
+		func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+			if request.SubdivideLayerHeight {
+				t.Fatal("layer height subdivision was enabled")
+			}
+			return threemf.Report{Mode: "full-spectrum", Output: request.Output}, nil
+		},
+		func(context.Context, *os.File, string) (bool, error) {
+			return false, errors.New("confirmation was not expected")
+		},
+		unexpectedMixModeSelection,
+	)
+	if status != 0 {
+		t.Fatalf("status = %d; stderr = %s", status, readOutput(t, stderr))
 	}
 }
 
@@ -176,7 +237,7 @@ func TestReplacementConfirmationCanContinueToFullSpectrumChoice(t *testing.T) {
 		},
 		unexpectedMixModeSelection,
 	)
-	if status != 0 || calls != 3 || confirmations != 2 {
+	if status != 0 || calls != 3 || confirmations != 3 {
 		t.Fatalf("status = %d, calls = %d, confirmations = %d; stderr = %s", status, calls, confirmations, readOutput(t, stderr))
 	}
 }
@@ -313,7 +374,7 @@ func TestConversionFailureReturnsOne(t *testing.T) {
 func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
-	confirmed := false
+	confirmations := 0
 	status := runWithPrompts([]string{"-o", "output.3mf", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
 		calls++
 		if calls == 1 {
@@ -327,14 +388,17 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 		}
 		return threemf.Report{Mode: "full-spectrum", Output: request.Output, Colors: "cmyg"}, nil
 	}, func(_ context.Context, _ *os.File, prompt string) (bool, error) {
-		confirmed = true
-		if !strings.Contains(prompt, "2 colors") || !strings.Contains(prompt, "1 need mixing") {
+		confirmations++
+		if confirmations == 1 && (!strings.Contains(prompt, "2 colors") || !strings.Contains(prompt, "1 need mixing")) {
 			t.Fatalf("prompt = %q", prompt)
 		}
-		return true, nil
+		if confirmations == 2 && !strings.Contains(prompt, "layer-height subdivision") {
+			t.Fatalf("prompt = %q", prompt)
+		}
+		return confirmations == 1, nil
 	}, unexpectedMixModeSelection)
-	if status != 0 || calls != 2 || !confirmed {
-		t.Fatalf("status = %d, calls = %d, confirmed = %v; stderr = %s", status, calls, confirmed, readOutput(t, stderr))
+	if status != 0 || calls != 2 || confirmations != 2 {
+		t.Fatalf("status = %d, calls = %d, confirmations = %d; stderr = %s", status, calls, confirmations, readOutput(t, stderr))
 	}
 	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: cmyg") {
 		t.Fatalf("stdout = %q", got)

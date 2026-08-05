@@ -86,7 +86,7 @@ func TestPlanFullSpectrumWithCustomColorOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.mode != "full-spectrum" || !plan.forceLocalZ || plan.virtualMixes != 1 {
+	if plan.mode != "full-spectrum" || plan.virtualMixes != 1 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
 	wantMapping := map[int]int{1: 1, 2: 2, 3: 5}
@@ -366,7 +366,7 @@ func TestPlanPreservesEverySourceMaterialSlotWithoutMixing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.mode != "material-slots" || plan.virtualMixes != 0 || plan.definitions != "" || plan.forceLocalZ {
+	if plan.mode != "material-slots" || plan.virtualMixes != 0 || plan.definitions != "" {
 		t.Fatalf("unexpected mapped plan: %+v", plan)
 	}
 	wantMapping := map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}

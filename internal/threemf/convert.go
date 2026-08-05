@@ -38,6 +38,7 @@ type Request struct {
 	Nozzle                string
 	Palette               Palette
 	FullSpectrum          bool
+	SubdivideLayerHeight  bool
 	PreserveMaterialSlots bool
 	MixMode               MixMode
 	MaterialMixModes      map[int]MixMode
@@ -136,7 +137,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	}
 
 	progress(Progress{Current: 3, Total: 6, Stage: "Translate mix definitions", Detail: fmt.Sprintf("%d virtual materials", plan.virtualMixes)})
-	mergedSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan)
+	mergedSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.SubdivideLayerHeight)
 	projectData, err := json.MarshalIndent(mergedSettings, "", "    ")
 	if err != nil {
 		return Report{}, fmt.Errorf("encode project settings: %w", err)
@@ -319,7 +320,7 @@ func writeModifiedMember(writer *zip.Writer, source zip.FileHeader, data []byte)
 	return err
 }
 
-func mergeProjectSettings(source, template map[string]any, plan materialPlan) map[string]any {
+func mergeProjectSettings(source, template map[string]any, plan materialPlan, fullSpectrum, subdivideLayerHeight bool) map[string]any {
 	merged := make(map[string]any, len(template)+8)
 	for key, value := range template {
 		merged[key] = value
@@ -333,11 +334,19 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan) ma
 	merged["mixed_filament_definitions"] = plan.definitions
 	merged["filament_colour"] = plan.outputColors()
 	localZ := "0"
-	if plan.forceLocalZ || (!plan.preserveSlots && source["enable_mixed_color_sublayer"] == "1") {
+	wholeObjects := "0"
+	if fullSpectrum {
+		merged["prime_volume"] = "20"
+		if subdivideLayerHeight {
+			localZ = "1"
+			wholeObjects = "1"
+		}
+	} else if !plan.preserveSlots && source["enable_mixed_color_sublayer"] == "1" {
 		localZ = "1"
 	}
 	merged["dithering_local_z_mode"] = localZ
 	merged["dithering_local_z_infill"] = localZ
+	merged["dithering_local_z_whole_objects"] = wholeObjects
 	merged["dithering_step_painted_zones_only"] = "1"
 	directMulticolor := "0"
 	if localZ == "1" && plan.hasMultiColor {
