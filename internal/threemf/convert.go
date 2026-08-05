@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,10 +17,14 @@ import (
 )
 
 const (
-	projectSettingsName = "Metadata/project_settings.config"
-	modelSettingsName   = "Metadata/model_settings.config"
-	mainModelName       = "3D/3dmodel.model"
-	sliceInfoName       = "Metadata/slice_info.config"
+	projectSettingsName     = "Metadata/project_settings.config"
+	processSettingsName     = "Metadata/process_settings_1.config"
+	modelSettingsName       = "Metadata/model_settings.config"
+	mainModelName           = "3D/3dmodel.model"
+	sliceInfoName           = "Metadata/slice_info.config"
+	projectProcessPreset    = "btu"
+	projectProcessVersion   = "2.2.53.2"
+	projectSettingSlotCount = 6
 )
 
 var (
@@ -28,6 +33,7 @@ var (
 	applicationRE   = regexp.MustCompile(`(?s)<metadata name="Application">.*?</metadata>`)
 	platePattern    = regexp.MustCompile(`^Metadata/plate_\d+\.json$`)
 	filamentPattern = regexp.MustCompile(`^Metadata/filament_settings_\d+\.config$`)
+	processPattern  = regexp.MustCompile(`^Metadata/process_settings_\d+\.config$`)
 )
 
 type Request struct {
@@ -137,7 +143,16 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	}
 
 	progress(Progress{Current: 3, Total: 6, Stage: "Translate mix definitions", Detail: fmt.Sprintf("%d virtual materials", plan.virtualMixes)})
-	mergedSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.SubdivideLayerHeight)
+	mergedSettings, hasProjectProcessSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.SubdivideLayerHeight)
+	var processData []byte
+	if hasProjectProcessSettings {
+		processSettings := buildProjectProcessSettings(mergedSettings, baseline.projectSettings)
+		processData, err = json.MarshalIndent(processSettings, "", "    ")
+		if err != nil {
+			return Report{}, fmt.Errorf("encode process settings: %w", err)
+		}
+		processData = append(processData, '\n')
+	}
 	projectData, err := json.MarshalIndent(mergedSettings, "", "    ")
 	if err != nil {
 		return Report{}, fmt.Errorf("encode project settings: %w", err)
@@ -166,7 +181,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		}
 	}()
 
-	if err := writeArchive(ctx, temporary, source, baseline, projectData, modelSettings, plan); err != nil {
+	if err := writeArchive(ctx, temporary, source, baseline, projectData, processData, modelSettings, plan); err != nil {
 		return Report{}, err
 	}
 	if err := temporary.Close(); err != nil {
@@ -174,7 +189,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	}
 
 	progress(Progress{Current: 5, Total: 6, Stage: "Verify output"})
-	if err := verifyArchive(temporaryName, plan); err != nil {
+	if err := verifyArchive(temporaryName, plan, hasProjectProcessSettings); err != nil {
 		return Report{}, err
 	}
 	if err := os.Chmod(temporaryName, 0o644); err != nil {
@@ -218,7 +233,7 @@ func openArchive(path string) (archive, error) {
 	return archive{reader: reader, files: files}, nil
 }
 
-func writeArchive(ctx context.Context, output *os.File, source archive, baseline u1Baseline, projectData, modelSettings []byte, plan materialPlan) error {
+func writeArchive(ctx context.Context, output *os.File, source archive, baseline u1Baseline, projectData, processData, modelSettings []byte, plan materialPlan) error {
 	writer := zip.NewWriter(output)
 	writtenSliceInfo := false
 	for _, file := range source.reader.File {
@@ -226,7 +241,7 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			writer.Close()
 			return err
 		}
-		if filamentPattern.MatchString(file.Name) {
+		if filamentPattern.MatchString(file.Name) || processPattern.MatchString(file.Name) {
 			continue
 		}
 
@@ -300,6 +315,13 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			return fmt.Errorf("write slice info: %w", err)
 		}
 	}
+	if len(processData) > 0 {
+		processHeader := zip.FileHeader{Name: processSettingsName, Method: zip.Deflate}
+		if err := writeModifiedMember(writer, processHeader, processData); err != nil {
+			writer.Close()
+			return fmt.Errorf("write process settings: %w", err)
+		}
+	}
 	if err := writer.Close(); err != nil {
 		return fmt.Errorf("finalize output archive: %w", err)
 	}
@@ -320,7 +342,7 @@ func writeModifiedMember(writer *zip.Writer, source zip.FileHeader, data []byte)
 	return err
 }
 
-func mergeProjectSettings(source, template map[string]any, plan materialPlan, fullSpectrum, subdivideLayerHeight bool) map[string]any {
+func mergeProjectSettings(source, template map[string]any, plan materialPlan, fullSpectrum, subdivideLayerHeight bool) (map[string]any, bool) {
 	merged := make(map[string]any, len(template)+8)
 	for key, value := range template {
 		merged[key] = value
@@ -354,7 +376,80 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan, fu
 	}
 	merged["dithering_local_z_direct_multicolor"] = directMulticolor
 	merged["mixed_filament_gradient_mode"] = "0"
-	return merged
+	hasProjectProcessSettings := mergeProjectSettingOverrides(merged, template,
+		"layer_height",
+		"initial_layer_print_height",
+		"mixed_filament_definitions",
+		"prime_volume",
+		"dithering_local_z_mode",
+		"dithering_local_z_infill",
+		"dithering_local_z_whole_objects",
+		"dithering_step_painted_zones_only",
+		"mixed_filament_gradient_mode",
+	)
+	return merged, hasProjectProcessSettings
+}
+
+func mergeProjectSettingOverrides(settings, baseline map[string]any, keys ...string) bool {
+	slots := stringSlice(settings["different_settings_to_system"])
+	overrides := make(map[string]struct{})
+	if len(slots) > 0 {
+		for _, key := range strings.Split(slots[0], ";") {
+			if key != "" {
+				overrides[key] = struct{}{}
+			}
+		}
+	}
+	changed := false
+	for _, key := range keys {
+		value, exists := settings[key]
+		baselineValue, baselineExists := baseline[key]
+		if exists != baselineExists || !reflect.DeepEqual(value, baselineValue) {
+			overrides[key] = struct{}{}
+			changed = true
+		}
+	}
+	if !changed {
+		return false
+	}
+	if len(slots) < projectSettingSlotCount {
+		slots = append(slots, make([]string, projectSettingSlotCount-len(slots))...)
+	}
+	processOverrides := make([]string, 0, len(overrides))
+	for key := range overrides {
+		processOverrides = append(processOverrides, key)
+	}
+	slices.Sort(processOverrides)
+	slots[0] = strings.Join(processOverrides, ";")
+	settings["different_settings_to_system"] = slots
+	return true
+}
+
+func buildProjectProcessSettings(settings, baseline map[string]any) map[string]any {
+	basePreset, _ := baseline["print_settings_id"].(string)
+	process := map[string]any{
+		"from":              "project",
+		"inherits":          basePreset,
+		"name":              projectProcessPreset,
+		"print_settings_id": projectProcessPreset,
+		"version":           projectProcessVersion,
+	}
+	overrideSlots := stringSlice(settings["different_settings_to_system"])
+	if len(overrideSlots) > 0 {
+		for _, key := range strings.Split(overrideSlots[0], ";") {
+			if value, exists := settings[key]; exists {
+				process[key] = value
+			}
+		}
+	}
+	inheritsGroup := append([]string(nil), stringSlice(settings["inherits_group"])...)
+	if len(inheritsGroup) < projectSettingSlotCount {
+		inheritsGroup = append(inheritsGroup, make([]string, projectSettingSlotCount-len(inheritsGroup))...)
+	}
+	inheritsGroup[0] = basePreset
+	settings["inherits_group"] = inheritsGroup
+	settings["print_settings_id"] = projectProcessPreset
+	return process
 }
 
 func remapModelSettings(data []byte, mapping map[int]int) ([]byte, error) {
@@ -437,7 +532,7 @@ func rewritePlate(file *zip.File, baselineSettings map[string]any, mapping map[i
 	return append(encoded, '\n'), nil
 }
 
-func verifyArchive(path string, plan materialPlan) error {
+func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings bool) error {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return fmt.Errorf("verify output: %w", err)
@@ -463,6 +558,9 @@ func verifyArchive(path string, plan materialPlan) error {
 		if !found[required] {
 			return fmt.Errorf("verify output: missing %s", required)
 		}
+	}
+	if found[processSettingsName] != hasProjectProcessSettings {
+		return fmt.Errorf("verify output: project process settings presence is %t, want %t", found[processSettingsName], hasProjectProcessSettings)
 	}
 	settings, err := readJSONMap(findFile(reader.File, projectSettingsName))
 	if err != nil {

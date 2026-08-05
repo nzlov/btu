@@ -272,6 +272,102 @@ func TestConvertFullSpectrumAppliesLayerHeightSubdivisionChoice(t *testing.T) {
 	}
 }
 
+func TestConvertMarksChangedProjectSettingsAsOverrides(t *testing.T) {
+	directory := t.TempDir()
+	templatePath := filepath.Join(directory, "template.3mf")
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	templateSettings := map[string]any{
+		"different_settings_to_system":        []string{"existing_override", "filament_override", "", "", "", ""},
+		"existing_override":                   "kept",
+		"filament_colour":                     []string{"#FFFFFF", "#FF0000", "#FFFF00", "#0000FF"},
+		"filament_type":                       []string{"PLA", "PLA", "PLA", "PLA"},
+		"initial_layer_print_height":          "0.25",
+		"mixed_filament_definitions":          "",
+		"nozzle_diameter":                     []string{"0.4"},
+		"prime_volume":                        "45",
+		"print_settings_id":                   "0.20 Standard @Snapmaker U1 (0.4 nozzle)",
+		"dithering_local_z_mode":              "0",
+		"dithering_local_z_whole_objects":     "0",
+		"dithering_local_z_infill":            "0",
+		"dithering_local_z_direct_multicolor": "0",
+		"dithering_step_painted_zones_only":   "1",
+		"mixed_filament_gradient_mode":        "0",
+	}
+	writeTest3MF(t, templatePath, templateSettings, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-2.3.5</metadata></model>`,
+		modelSettingsName: `<config/>`,
+		sliceInfoName:     `<config/>`,
+	})
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour":            []string{"#FFFFFF", "#FF0000", "#00FF00"},
+		"filament_type":              []string{"PLA", "PLA", "PLA"},
+		"initial_layer_print_height": "0.2",
+		"nozzle_diameter":            []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="2"/><metadata key="extruder" value="3"/></config>`,
+	})
+
+	_, err := Convert(context.Background(), Request{
+		Source:               sourcePath,
+		Template:             templatePath,
+		Output:               outputPath,
+		FullSpectrum:         true,
+		SubdivideLayerHeight: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := readTestJSONMember(t, outputPath, projectSettingsName)
+	overrideSlots := stringSlice(settings["different_settings_to_system"])
+	if len(overrideSlots) != 6 {
+		t.Fatalf("different_settings_to_system = %v, want six slots", overrideSlots)
+	}
+	wantOverrides := []string{
+		"dithering_local_z_infill",
+		"dithering_local_z_mode",
+		"dithering_local_z_whole_objects",
+		"existing_override",
+		"initial_layer_print_height",
+		"mixed_filament_definitions",
+		"prime_volume",
+	}
+	if got := strings.Split(overrideSlots[0], ";"); !reflect.DeepEqual(got, wantOverrides) {
+		t.Fatalf("process overrides = %v, want %v", got, wantOverrides)
+	}
+	if overrideSlots[1] != "filament_override" {
+		t.Fatalf("filament override slot was not preserved: %v", overrideSlots)
+	}
+	if got := settings["print_settings_id"]; got != "btu" {
+		t.Fatalf("print_settings_id = %v, want btu", got)
+	}
+	wantInheritsGroup := []string{"0.20 Standard @Snapmaker U1 (0.4 nozzle)", "", "", "", "", ""}
+	if got := stringSlice(settings["inherits_group"]); !reflect.DeepEqual(got, wantInheritsGroup) {
+		t.Fatalf("inherits_group = %v, want %v", got, wantInheritsGroup)
+	}
+
+	processSettings := readTestJSONMember(t, outputPath, "Metadata/process_settings_1.config")
+	if got := processSettings["name"]; got != "btu" {
+		t.Fatalf("process preset name = %v, want btu", got)
+	}
+	if got := processSettings["print_settings_id"]; got != "btu" {
+		t.Fatalf("process print_settings_id = %v, want btu", got)
+	}
+	if got := processSettings["inherits"]; got != "0.20 Standard @Snapmaker U1 (0.4 nozzle)" {
+		t.Fatalf("process inherits = %v", got)
+	}
+	for _, key := range wantOverrides {
+		if !reflect.DeepEqual(processSettings[key], settings[key]) {
+			t.Fatalf("process %s = %v, want project value %v", key, processSettings[key], settings[key])
+		}
+	}
+	if _, exists := processSettings["dithering_local_z_direct_multicolor"]; exists {
+		t.Fatal("derived direct multicolor setting should not be stored in the process preset")
+	}
+}
+
 func TestConvertUsesSourceMaterialSettingsWithNozzleOverride(t *testing.T) {
 	directory := t.TempDir()
 	sourcePath := filepath.Join(directory, "source.3mf")
@@ -525,6 +621,17 @@ func TestConvertSelectsNozzleBaseline(t *testing.T) {
 			printSettingsID, ok := settings["print_settings_id"].(string)
 			if !ok || !strings.Contains(printSettingsID, "("+test.wantNozzle+" nozzle)") {
 				t.Fatalf("print_settings_id = %v", settings["print_settings_id"])
+			}
+			archive, err := openArchive(outputPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if archive.files[processSettingsName] != nil {
+				archive.reader.Close()
+				t.Fatal("unchanged process settings should not create a btu project preset")
+			}
+			if err := archive.reader.Close(); err != nil {
+				t.Fatal(err)
 			}
 			plate := readTestJSONMember(t, outputPath, "Metadata/plate_1.json")
 			wantPlateNozzle, _ := strconv.ParseFloat(test.wantNozzle, 64)
