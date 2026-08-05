@@ -30,7 +30,7 @@ func DefaultPalette() Palette {
 func ParsePalette(order string) (Palette, error) {
 	order = strings.ToLower(strings.TrimSpace(order))
 	if len(order) != 4 {
-		return Palette{}, fmt.Errorf("colors requires exactly four characters: c, m, y, and one of g, w, or b")
+		return Palette{}, fmt.Errorf("colors requires exactly four characters chosen from c, m, y, g, w, and b")
 	}
 	palette := Palette{}
 	seen := make(map[ColorRole]bool, len(palette.Slots))
@@ -62,18 +62,17 @@ func (palette Palette) normalized() (Palette, error) {
 	seen := make(map[ColorRole]bool, len(palette.Slots))
 	for _, role := range palette.Slots {
 		if !isColorRole(role) || seen[role] {
-			return Palette{}, fmt.Errorf("palette must contain c, m, y, and exactly one of g, w, or b")
+			return Palette{}, fmt.Errorf("palette must contain four distinct colors chosen from c, m, y, g, w, and b")
 		}
 		seen[role] = true
-	}
-	if !seen[ColorCyan] || !seen[ColorMagenta] || !seen[ColorYellow] ||
-		!(seen[ColorGray] || seen[ColorWhite] || seen[ColorBlack]) {
-		return Palette{}, fmt.Errorf("palette must contain c, m, y, and exactly one of g, w, or b")
 	}
 	return palette, nil
 }
 
 func (palette Palette) Neutral() ColorRole {
+	if palette.Slot(ColorCyan) == 0 || palette.Slot(ColorMagenta) == 0 || palette.Slot(ColorYellow) == 0 {
+		return ""
+	}
 	for _, role := range palette.Slots {
 		if role == ColorGray || role == ColorWhite || role == ColorBlack {
 			return role
@@ -92,8 +91,64 @@ func (palette Palette) Slot(role ColorRole) int {
 }
 
 func (palette Palette) withNeutral(neutral ColorRole) Palette {
-	palette.Slots[palette.Slot(palette.Neutral())-1] = neutral
+	slot := palette.Slot(palette.Neutral())
+	if slot == 0 {
+		return palette
+	}
+	palette.Slots[slot-1] = neutral
 	return palette
+}
+
+func (palette Palette) supportsDynamicNeutral() bool {
+	return palette.Neutral() != ""
+}
+
+func projectPaletteCandidates(preferred Palette) []Palette {
+	result := []Palette{preferred}
+	seen := map[string]bool{preferred.String(): true}
+	for first := 0; first < len(colorRoles)-3; first++ {
+		for second := first + 1; second < len(colorRoles)-2; second++ {
+			for third := second + 1; third < len(colorRoles)-1; third++ {
+				for fourth := third + 1; fourth < len(colorRoles); fourth++ {
+					selected := map[ColorRole]bool{
+						colorRoles[first]:  true,
+						colorRoles[second]: true,
+						colorRoles[third]:  true,
+						colorRoles[fourth]: true,
+					}
+					candidate := paletteForRoles(preferred, selected)
+					if !seen[candidate.String()] {
+						seen[candidate.String()] = true
+						result = append(result, candidate)
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+func paletteForRoles(preferred Palette, selected map[ColorRole]bool) Palette {
+	result := Palette{}
+	used := make(map[ColorRole]bool, len(result.Slots))
+	for index, role := range preferred.Slots {
+		if selected[role] {
+			result.Slots[index] = role
+			used[role] = true
+		}
+	}
+	next := 0
+	for _, role := range colorRoles {
+		if !selected[role] || used[role] {
+			continue
+		}
+		for result.Slots[next] != "" {
+			next++
+		}
+		result.Slots[next] = role
+		used[role] = true
+	}
+	return result
 }
 
 func (palette Palette) outputColors() []string {

@@ -26,8 +26,19 @@ func TestParsePaletteCustomOrderWithBlack(t *testing.T) {
 	}
 }
 
+func TestParsePaletteAllowsReplacingYellowWithWhite(t *testing.T) {
+	palette, err := ParsePalette("cmwb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [4]ColorRole{ColorCyan, ColorMagenta, ColorWhite, ColorBlack}
+	if palette.Slots != want {
+		t.Fatalf("palette = %v, want %v", palette.Slots, want)
+	}
+}
+
 func TestParsePaletteRejectsInvalidColorSet(t *testing.T) {
-	for _, order := range []string{"cmy", "cmyc", "cmgw", "cmyx"} {
+	for _, order := range []string{"cmy", "cmyc", "cmyx", "cmwbb"} {
 		if _, err := ParsePalette(order); err == nil {
 			t.Fatalf("ParsePalette(%q) unexpectedly succeeded", order)
 		}

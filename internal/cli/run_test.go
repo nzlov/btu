@@ -227,6 +227,19 @@ func TestPrintsPlateNameAndT4ReplacementStep(t *testing.T) {
 	}
 }
 
+func TestPrintsAnalyzedRequiredColorOrder(t *testing.T) {
+	stdout, stderr := tempOutputs(t)
+	status := run([]string{"--colors", "cmyg", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
+		return threemf.Report{Mode: "full-spectrum", Output: request.Output, Colors: "cmwb"}, nil
+	})
+	if status != 0 {
+		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
+	}
+	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: cmwb") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
 func TestPrintsReplacementStepForCustomNeutralSlot(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	status := run([]string{"--colors", "bmcy", "source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
@@ -323,7 +336,7 @@ func TestFullSpectrumConfirmationRetriesConversion(t *testing.T) {
 	if status != 0 || calls != 2 || !confirmed {
 		t.Fatalf("status = %d, calls = %d, confirmed = %v; stderr = %s", status, calls, confirmed, readOutput(t, stderr))
 	}
-	if got := readOutput(t, stdout); !strings.Contains(got, "U1 colors: cmyg") {
+	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: cmyg") {
 		t.Fatalf("stdout = %q", got)
 	}
 }
@@ -397,7 +410,7 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
 	}
-	if got := readOutput(t, stdout); !strings.Contains(got, "U1 colors: #FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
+	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: #FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
 		t.Fatalf("stdout = %q", got)
 	}
 }

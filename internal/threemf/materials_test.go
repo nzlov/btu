@@ -98,6 +98,28 @@ func TestPlanFullSpectrumWithCustomColorOrder(t *testing.T) {
 	}
 }
 
+func TestPlanReplacesUnusedYellowAndGrayWithWhiteAndBlack(t *testing.T) {
+	source := map[string]any{
+		"filament_colour": []string{"#FF80C0", "#FF0000", "#09070B", "#F9F9F9", "#1B72CA"},
+		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA", "PLA"},
+	}
+	usage := projectMaterialUsage{Total: materialUsage{1: 20, 2: 10, 3: 30, 4: 40, 5: 20}}
+
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), materialPlanOptions{fullSpectrum: true}, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.palette.String() != "cmwb" || plan.virtualMixes != 2 {
+		t.Fatalf("palette = %q, virtual mixes = %d, want cmwb with two mixes", plan.palette.String(), plan.virtualMixes)
+	}
+	wantDirect := map[int]int{2: 2, 3: 4, 4: 3}
+	for sourceID, slot := range wantDirect {
+		if plan.allMapping[sourceID] != slot {
+			t.Fatalf("source T%d maps to T%d, want T%d", sourceID, plan.allMapping[sourceID], slot)
+		}
+	}
+}
+
 func TestPlanPreservesUnusedDeclaredBaseColors(t *testing.T) {
 	source := map[string]any{
 		"filament_colour": []string{"#000000", "#FFFFFF", "#FFFF00", "#FF0000"},
@@ -119,7 +141,7 @@ func TestPlanPreservesUnusedDeclaredBaseColors(t *testing.T) {
 	}
 }
 
-func TestPlanReplacesUnusedRedSlotWithRequiredWhite(t *testing.T) {
+func TestPlanUsesFreedSlotsForWhiteAndBlack(t *testing.T) {
 	source := map[string]any{
 		"filament_colour": []string{"#000000", "#FFFFFF", "#FFFF00"},
 		"filament_type":   []string{"PLA", "PLA", "PLA"},
@@ -129,10 +151,10 @@ func TestPlanReplacesUnusedRedSlotWithRequiredWhite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.palette.String(); got != "cmyg" || plan.plates[0].Colors != "cmyw" {
-		t.Fatalf("palette = %q, plates = %+v", got, plan.plates)
+	if got := plan.palette.String(); got != "cwyb" || plan.virtualMixes != 0 {
+		t.Fatalf("palette = %q, virtual mixes = %d", got, plan.virtualMixes)
 	}
-	want := map[int]int{1: 5, 2: 4, 3: 3}
+	want := map[int]int{1: 4, 2: 2, 3: 3}
 	if !reflect.DeepEqual(plan.physicalMapping, want) {
 		t.Fatalf("mapping = %v, want %v", plan.physicalMapping, want)
 	}
@@ -148,8 +170,8 @@ func TestPlanCanReplaceAnotherUnusedBaseSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.palette.String(); got != "cmyg" || plan.plates[0].Colors != "cmyw" {
-		t.Fatalf("palette = %q, plates = %+v", got, plan.plates)
+	if got := plan.palette.String(); got != "cmwb" || plan.virtualMixes != 0 {
+		t.Fatalf("palette = %q, virtual mixes = %d", got, plan.virtualMixes)
 	}
 }
 
@@ -163,8 +185,8 @@ func TestPlanChoosesBaseSlotForNearWhite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.palette.String(); got != "cmyg" || plan.plates[0].Colors != "cmyw" {
-		t.Fatalf("palette = %q, plates = %+v", got, plan.plates)
+	if got := plan.palette.String(); got != "cmwb" || plan.virtualMixes != 0 {
+		t.Fatalf("palette = %q, virtual mixes = %d", got, plan.virtualMixes)
 	}
 }
 
@@ -357,7 +379,7 @@ func TestPlanPreservesEverySourceMaterialSlotWithoutMixing(t *testing.T) {
 	}
 }
 
-func TestPlanUsesWhiteNeutralAndMixesBlackOnSamePlate(t *testing.T) {
+func TestPlanUsesDirectWhiteAndBlackOnSamePlate(t *testing.T) {
 	source := map[string]any{
 		"filament_colour": []string{"#FF0000", "#FFFF00", "#FFFFFF", "#000000"},
 		"filament_type":   []string{"PLA", "PLA", "PLA", "PLA"},
@@ -367,10 +389,10 @@ func TestPlanUsesWhiteNeutralAndMixesBlackOnSamePlate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.mode != "full-spectrum" || plan.virtualMixes != 1 || plan.palette.String() != "cmyg" || plan.plates[0].Colors != "cmyw" {
+	if plan.mode != "layered" || plan.virtualMixes != 0 || plan.palette.String() != "wmyb" || len(plan.plates) != 0 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	want := map[int]int{1: 2, 2: 3, 3: 4, 4: 5}
+	want := map[int]int{1: 2, 2: 3, 3: 1, 4: 4}
 	if !reflect.DeepEqual(plan.allMapping, want) {
 		t.Fatalf("mapping = %v, want %v", plan.allMapping, want)
 	}

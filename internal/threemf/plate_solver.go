@@ -53,6 +53,7 @@ func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Pal
 	for _, plate := range usage.Plates {
 		bestScore := plateScore{maxError: math.Inf(1), totalError: math.Inf(1), mixCost: math.Inf(1)}
 		bestNeutral := ColorRole("")
+		found := false
 		for _, candidate := range paletteCandidates(preferred) {
 			score, err := scorePlatePalette(colors, plate.Materials, candidate, modes)
 			if err != nil {
@@ -61,16 +62,69 @@ func selectPlatePlans(colors [][3]int, usage projectMaterialUsage, preferred Pal
 			if betterPlateScore(score, bestScore) {
 				bestScore = score
 				bestNeutral = candidate.Neutral()
+				found = true
 			}
 		}
-		if bestNeutral == "" {
-			return nil, fmt.Errorf("plate %d has no valid CMY plus neutral palette", plate.ID)
+		if !found {
+			return nil, fmt.Errorf("plate %d has no valid four-color palette", plate.ID)
 		}
 		plans = append(plans, platePlan{
 			id: plate.ID, name: plate.Name, neutral: bestNeutral, usage: plate.Materials,
 		})
 	}
 	return plans, nil
+}
+
+func selectProjectPalette(colors [][3]int, usage projectMaterialUsage, preferred Palette, modes []MixMode) (Palette, error) {
+	best := Palette{}
+	bestScore := plateScore{maxError: math.Inf(1), totalError: math.Inf(1), mixCost: math.Inf(1)}
+	bestChanges := math.MaxInt
+	for _, candidate := range projectPaletteCandidates(preferred) {
+		plans, err := selectPlatePlans(colors, usage, candidate, modes)
+		if err != nil {
+			continue
+		}
+		recipes, err := selectProjectRecipes(colors, usage, plans, candidate, modes)
+		if err != nil {
+			continue
+		}
+		score := scoreProjectRecipes(recipes, usage.Total)
+		changes := paletteChanges(preferred, candidate)
+		if betterPlateScore(score, bestScore) || (equalPlateScore(score, bestScore) && changes < bestChanges) {
+			best = candidate
+			bestScore = score
+			bestChanges = changes
+		}
+	}
+	if best == (Palette{}) {
+		return Palette{}, fmt.Errorf("source colors have no valid four-color palette")
+	}
+	return best, nil
+}
+
+func scoreProjectRecipes(recipes []colorRecipe, usage materialUsage) plateScore {
+	score := plateScore{}
+	for material, weight := range usage {
+		if material <= 0 || material > len(recipes) || weight <= 0 {
+			continue
+		}
+		recipe := recipes[material-1]
+		weighted := 1 + math.Log1p(weight)
+		score.maxError = max(score.maxError, recipe.error)
+		score.totalError += recipe.error * weighted
+		score.mixCost += float64(len(recipe.components)-1) * weighted
+	}
+	return score
+}
+
+func paletteChanges(first, second Palette) int {
+	changes := 0
+	for index := range first.Slots {
+		if first.Slots[index] != second.Slots[index] {
+			changes++
+		}
+	}
+	return changes
 }
 
 func scorePlatePalette(colors [][3]int, usage materialUsage, palette Palette, modes []MixMode) (plateScore, error) {
@@ -108,7 +162,25 @@ func betterPlateScore(candidate, current plateScore) bool {
 	return false
 }
 
+func equalPlateScore(first, second plateScore) bool {
+	const tolerance = 1e-9
+	return math.Abs(first.maxError-second.maxError) <= tolerance &&
+		math.Abs(first.totalError-second.totalError) <= tolerance &&
+		math.Abs(first.mixCost-second.mixCost) <= tolerance
+}
+
 func selectProjectRecipes(colors [][3]int, usage projectMaterialUsage, plans []platePlan, preferred Palette, modes []MixMode) ([]colorRecipe, error) {
+	if !preferred.supportsDynamicNeutral() {
+		recipes := make([]colorRecipe, len(colors))
+		for index, color := range colors {
+			recipe, ok := bestColorRecipeForMode(color, preferred, mixModeAt(modes, index+1))
+			if !ok {
+				return nil, fmt.Errorf("source T%d target %s has no compatible recipe", index+1, canonicalColor(color))
+			}
+			recipes[index] = recipe
+		}
+		return recipes, nil
+	}
 	materialNeutrals := make(map[int]map[ColorRole]bool)
 	for _, plan := range plans {
 		for material, weight := range plan.usage {

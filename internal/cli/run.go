@@ -121,7 +121,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			&urfavecli.StringFlag{
 				Name:             "colors",
 				Aliases:          []string{"c"},
-				Usage:            "set T1-T4 preview colors with `ORDER` containing cmy and one of gwb",
+				Usage:            "set current T1-T4 colors from four distinct c/m/y/g/w/b codes in `ORDER`",
 				Value:            "cmyg",
 				OnlyOnce:         true,
 				ValidateDefaults: true,
@@ -238,7 +238,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 			}
 			fmt.Fprintln(stdout, ")")
 			if report.Colors != "" {
-				fmt.Fprintf(stdout, "  U1 colors: %s\n", report.Colors)
+				fmt.Fprintf(stdout, "  Required U1 colors: %s\n", report.Colors)
 			}
 			keys := make([]int, 0, len(report.PhysicalMapping))
 			for sourceID := range report.PhysicalMapping {
@@ -249,7 +249,11 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				fmt.Fprintf(stdout, "  source T%d -> U1 T%d\n", sourceID, report.PhysicalMapping[sourceID])
 			}
 			if len(report.Plates) > 0 {
-				printPlateSteps(stdout, report.Plates, request.Palette)
+				printPalette, parseErr := threemf.ParsePalette(report.Colors)
+				if parseErr != nil {
+					return urfavecli.Exit(fmt.Errorf("conversion returned invalid required colors: %w", parseErr), 1)
+				}
+				printPlateSteps(stdout, report.Plates, printPalette)
 			}
 			return nil
 		},

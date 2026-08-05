@@ -172,14 +172,14 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Mode != "full-spectrum" || report.VirtualMixes != 1 {
+	if report.Mode != "full-spectrum" || report.VirtualMixes != 2 || report.Colors != "bmyg" {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 	settings := readTestJSONMember(t, outputPath, projectSettingsName)
 	if settings["printer_model"] != "Snapmaker U1" {
 		t.Fatalf("built-in printer model = %v", settings["printer_model"])
 	}
-	wantDefinition := "1,3,1,1,50,0,g134,w26/72/2,m0,z0,xa0,xb0,d0,o0,u1,cm0"
+	wantDefinition := "3,4,1,1,93,0,g,w,m2,z0,xa0,xb0,d0,o0,u1,cm0;1,2,1,1,50,0,g123,w18/1/81,m0,z0,xa0,xb0,d0,o0,u2,cm0"
 	if settings["mixed_filament_definitions"] != wantDefinition {
 		t.Fatalf("definition = %v", settings["mixed_filament_definitions"])
 	}
@@ -189,12 +189,12 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	if settings["printer_variant"] != "0.4" {
 		t.Fatalf("printer_variant = %v, want source nozzle 0.4", settings["printer_variant"])
 	}
-	wantColors := []any{"#0000FF", "#FF0000", "#FFFF00", "#808080"}
+	wantColors := []any{"#000000", "#FF0000", "#FFFF00", "#808080"}
 	if got := settings["filament_colour"]; !reflect.DeepEqual(got, wantColors) {
 		t.Fatalf("filament colors = %v, want %v", got, wantColors)
 	}
 	modelSettings := readTestMember(t, outputPath, modelSettingsName)
-	for _, reference := range []string{`value="4"`, `value="2"`, `value="5"`} {
+	for _, reference := range []string{`value="5"`, `value="2"`, `value="6"`} {
 		if !strings.Contains(modelSettings, reference) {
 			t.Fatalf("model settings missing %s: %s", reference, modelSettings)
 		}

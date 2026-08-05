@@ -214,6 +214,10 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		}
 		targetColors[index] = color
 	}
+	palette, err := selectProjectPalette(targetColors, usage, palette, modes)
+	if err != nil {
+		return materialPlan{}, err
+	}
 	plans, err := selectPlatePlans(targetColors, usage, palette, modes)
 	if err != nil {
 		return materialPlan{}, err
@@ -274,6 +278,9 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 }
 
 func reportsForNeutral(usage projectMaterialUsage, palette Palette) []PlateReport {
+	if !palette.supportsDynamicNeutral() {
+		return nil
+	}
 	plans := make([]platePlan, 0, len(usage.Plates))
 	for _, plate := range usage.Plates {
 		plans = append(plans, platePlan{id: plate.ID, name: plate.Name, neutral: palette.Neutral()})
@@ -282,6 +289,9 @@ func reportsForNeutral(usage projectMaterialUsage, palette Palette) []PlateRepor
 }
 
 func reportsFromPlatePlans(plans []platePlan, palette Palette) []PlateReport {
+	if !palette.supportsDynamicNeutral() {
+		return nil
+	}
 	reports := make([]PlateReport, len(plans))
 	for index, plan := range plans {
 		reports[index] = PlateReport{
@@ -375,6 +385,9 @@ func materialMixModes(count int, defaultMode MixMode, overrides map[int]MixMode)
 }
 
 func paletteCandidates(preferred Palette) []Palette {
+	if !preferred.supportsDynamicNeutral() {
+		return []Palette{preferred}
+	}
 	roles := []ColorRole{preferred.Neutral(), ColorGray, ColorWhite, ColorBlack}
 	result := make([]Palette, 0, 3)
 	seen := make(map[ColorRole]bool, 3)
