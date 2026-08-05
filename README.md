@@ -6,6 +6,25 @@ geometry-layered projects and Bambu native Full Spectrum mixed materials. For
 ordinary projects, colors that cannot use a physical filament slot are
 automatically converted into U1 Full Spectrum mixtures.
 
+## Features
+
+- Preserves source geometry, layer height, face painting, material profiles,
+  and supported mixed-material definitions while replacing printer-specific
+  metadata with Snapmaker U1 settings.
+- Includes built-in U1 baselines for 0.2, 0.4, 0.6, and 0.8 mm nozzles, with an
+  optional U1 3MF override for custom printer and process settings.
+- Optimizes the four physical filament slots from actual painted-material usage
+  and reports the required T1-T4 order before printing.
+- Plans gray, white, and black swaps per plate for CMY-plus-neutral projects and
+  prints a recommended plate order that minimizes manual filament changes.
+- Generates U1 Full Spectrum virtual materials with ratio, cycle, match, and
+  gradient mixing modes, including per-color mode selection in interactive use.
+- Preserves all source material slots and their settings when automatic mixing
+  is declined, without imposing a four-slot logical-material limit.
+- Uses interactive progress and overwrite confirmation in a terminal, while
+  retaining plain non-interactive output and verifying the temporary 3MF before
+  replacing an existing file.
+
 The built-in U1 baselines supply printer, process, nozzle, and U1-coupled
 extrusion settings for 0.2, 0.4, 0.6, and 0.8 mm nozzles. The source supplies
 geometry, layer height, material profiles, material references, face painting,
