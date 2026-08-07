@@ -1,5 +1,7 @@
 # btu
 
+[简体中文](README.zh-CN.md)
+
 `btu` converts Bambu Studio 3MF material assignments into a Snapmaker U1 3MF
 while preserving the source model geometry. It supports both ordinary
 geometry-layered projects and Bambu native Full Spectrum mixed materials. For
