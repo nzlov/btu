@@ -11,10 +11,12 @@ import (
 )
 
 type Progress struct {
-	Current int
-	Total   int
-	Stage   string
-	Detail  string
+	Current     int
+	Total       int
+	Stage       string
+	Detail      string
+	ItemCurrent int
+	ItemTotal   int
 }
 
 type Job[T any] func(report func(Progress)) (T, error)
@@ -29,6 +31,7 @@ type model[T any] struct {
 	events   <-chan any
 	progress Progress
 	result   resultMsg[T]
+	width    int
 	done     bool
 }
 
@@ -49,6 +52,9 @@ func (m model[T]) Init() tea.Cmd {
 
 func (m model[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
 			m.result.err = context.Canceled
@@ -74,17 +80,36 @@ func (m model[T]) View() string {
 	if p.Total <= 0 {
 		return "Preparing...\n"
 	}
-	width := 28
-	filled := p.Current * width / p.Total
-	if filled > width {
-		filled = width
+	current := max(0, min(p.Current, p.Total))
+	barWidth := 28
+	if m.width > 0 {
+		stageWidth := len([]rune(p.Stage))
+		barWidth = max(8, min(barWidth, m.width-stageWidth-9))
 	}
-	percent := p.Current * 100 / p.Total
-	detail := ""
+	filled := current * barWidth / p.Total
+	percent := current * 100 / p.Total
+	line := fmt.Sprintf("[%s%s] %3d%%  %s", strings.Repeat("#", filled), strings.Repeat("-", barWidth-filled), percent, p.Stage)
+	if p.ItemTotal <= 0 {
+		if p.Detail != "" {
+			line += "  " + p.Detail
+		}
+		return truncateProgressLine(line, m.width) + "\n"
+	}
+	itemCurrent := max(0, min(p.ItemCurrent, p.ItemTotal))
+	itemPercent := itemCurrent * 100 / p.ItemTotal
+	detail := fmt.Sprintf("  %d/%d (%d%%)", itemCurrent, p.ItemTotal, itemPercent)
 	if p.Detail != "" {
-		detail = "  " + p.Detail
+		detail += "  " + p.Detail
 	}
-	return fmt.Sprintf("[%s%s] %3d%%  %s%s\n", strings.Repeat("#", filled), strings.Repeat("-", width-filled), percent, p.Stage, detail)
+	return truncateProgressLine(line, m.width) + "\n" + truncateProgressLine(detail, m.width) + "\n"
+}
+
+func truncateProgressLine(value string, width int) string {
+	characters := []rune(value)
+	if width <= 3 || len(characters) <= width {
+		return value
+	}
+	return string(characters[:width-3]) + "..."
 }
 
 func Run[T any](ctx context.Context, output *os.File, job Job[T]) (T, error) {
@@ -112,15 +137,18 @@ func Run[T any](ctx context.Context, output *os.File, job Job[T]) (T, error) {
 }
 
 func runPlain[T any](output io.Writer, job Job[T]) (T, error) {
-	lastCurrent := -1
-	lastStage := ""
+	var last Progress
+	hasLast := false
 	return job(func(progress Progress) {
-		if progress.Current == lastCurrent && progress.Stage == lastStage {
+		if hasLast && progress == last {
 			return
 		}
-		lastCurrent = progress.Current
-		lastStage = progress.Stage
+		last = progress
+		hasLast = true
 		fmt.Fprintf(output, "[%d/%d] %s", progress.Current, progress.Total, progress.Stage)
+		if progress.ItemTotal > 0 {
+			fmt.Fprintf(output, " [%d/%d]", progress.ItemCurrent, progress.ItemTotal)
+		}
 		if progress.Detail != "" {
 			fmt.Fprintf(output, ": %s", progress.Detail)
 		}

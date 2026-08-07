@@ -21,9 +21,8 @@ automatically converted into U1 Full Spectrum mixtures.
   gradient mixing modes, including per-color mode selection in interactive use.
 - Preserves all source material slots and their settings when automatic mixing
   is declined, without imposing a four-slot logical-material limit.
-- Uses interactive progress and overwrite confirmation in a terminal, while
-  retaining plain non-interactive output and verifying the temporary 3MF before
-  replacing an existing file.
+- Uses interactive color-plan review, progress, and overwrite confirmation in a
+  terminal, while verifying the temporary 3MF before replacing an existing file.
 
 ## Conversion comparison
 
@@ -79,7 +78,7 @@ Options:
 | `--colors ORDER` | `-c ORDER` | no | Set the current T1-T4 color order using four distinct codes from `c`, `m`, `y`, `g`, `w`, and `b` |
 | `--full-spectrum` | `-f` | no | Synthesize source colors from the loaded filaments |
 | `--mix-mode MODE` | `-m MODE` | no | Set generated mixtures to `ratio`, `cycle`, `match`, or `gradient` (default: `ratio`) |
-| `--[no-]subdivide-layer-height` | | no | Enable or disable mixed-color layer-height subdivision for the whole object and infill |
+| `--[no-]subdivide-layer-height` | | no | Enable or disable all three Local-Z subdivision settings without opening their TUI |
 | `--nozzle DIAMETER_MM` | `-n DIAMETER_MM` | no | Force a built-in baseline; accepts `0.2`, `0.4`, `0.6`, or `0.8` (millimeters) |
 | `--template FILE` | `-t FILE` | no | Override the built-in U1 baseline |
 
@@ -190,21 +189,31 @@ Generated mixtures support the four Snapmaker Orca modes:
 - `gradient` chooses the closest 50:50 two-filament pair and creates an A-to-B
   gradient from 80% to 20% A.
 
-When any declared source color is not one of the six available colors and
-`--full-spectrum` was not supplied, an interactive terminal asks whether to
-generate the colors with full-spectrum mixing. Answering yes opens a mix-mode
-list showing only colors that require synthesis, with their original swatch and
-hex value. Use Up/Down to choose a source color, Left/Right to change only that
-color's mode, and Enter to apply. Direct base colors are not listed.
-Answering no keeps the requested T1-T4 base-color order, then appends one
-ordinary material slot for every source material in source T1...Tn order with
-its per-material settings, and creates no virtual mixtures. This non-mixed
-result is not limited to four logical material slots.
-Whenever full-spectrum conversion is enabled and neither layer-height flag was
-supplied, an interactive terminal then asks whether to subdivide mixed-color
-layers across the whole object and infill. Answering yes enables all three
-Local-Z options; answering no disables them. Non-interactive runs must pass
-either `--subdivide-layer-height` or `--no-subdivide-layer-height`.
+Every conversion started without `--full-spectrum` opens a color-plan review,
+including projects whose colors all map directly to T1-T4. The complete source
+color order is shown on the left and the planned U1 order on the right. Right-side
+rows are labeled `Base`, `Material`, or `Mixed`; only mixed rows expose a mixing
+mode. Use Up/Down to select an editable output, Left/Right to replace it, and
+Enter to apply. On a mixed row, Tab switches focus between its mode and
+replacement. A selected output can be replaced by any physical base slot or
+another existing output. Every source color mapped to that output changes
+together; an unneeded mixed or ordinary slot is removed and the remaining slots
+are renumbered.
+
+When a declared source color needs synthesis, the terminal first asks whether to
+generate it with full-spectrum mixing. Answering yes reviews the deduplicated
+mixed outputs and their preview colors. Answering no reviews the requested T1-T4
+base order followed by one ordinary material slot for every source material in
+source T1...Tn order. These ordinary slots retain their per-material settings and
+are not limited to four logical materials. Below either color order, the same TUI
+exposes three independent controls for layer-height subdivision, infill
+subdivision, and whole-object subdivision. Select them with Up/Down and change
+them with Left/Right or Space.
+When `--full-spectrum` is supplied directly and neither layer-height flag is
+present, the TUI opens a settings-only view with the same three independent
+controls. `--subdivide-layer-height` enables all three together and
+`--no-subdivide-layer-height` disables all three together, so non-interactive
+runs can keep using one explicit flag.
 Full-spectrum output also sets the wipe-tower purge volume (`prime_volume`) to
 `20` mm^3. If conversion changes any supported process setting from the
 selected U1 baseline, `btu` embeds a project process preset named `btu`. That
@@ -212,8 +221,10 @@ preset inherits the selected U1 system preset and stores only the changed
 values, such as mixed-material definitions, Local-Z options, purge volume, or
 source layer heights. If no supported process setting changes, the output keeps
 the selected system preset and does not create a redundant project preset.
-Non-interactive runs return an error with instructions to pass
-`--full-spectrum`; `--mix-mode` then applies one mode to every generated mixture.
+Non-interactive runs without `--full-spectrum` return an error because the color
+plan must be reviewed. For unattended conversion, pass `--full-spectrum`, an
+explicit `--subdivide-layer-height` or `--no-subdivide-layer-height`, and the
+desired `--mix-mode`; that mode applies to every generated mixture.
 
 Override the built-in baseline when needed:
 
@@ -225,7 +236,9 @@ Override the built-in baseline when needed:
 ```
 
 Progress uses Bubble Tea in an interactive terminal and plain stage messages
-when output is redirected or run without a TTY.
+when output is redirected or run without a TTY. Analysis, package rewriting,
+and verification report exact completed and total work-item counts, including
+each model or archive member.
 
 Replacement is published only after the temporary 3MF passes verification.
 Declining the prompt leaves the existing output unchanged. Bambu

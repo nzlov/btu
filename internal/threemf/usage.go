@@ -144,23 +144,45 @@ func (transform transform3D) apply(point point3D) point3D {
 	}
 }
 
-func analyzeMaterialUsage(source archive) (projectMaterialUsage, error) {
+func materialUsageWorkTotal(source archive) int {
+	total := 2
+	for _, file := range source.reader.File {
+		if strings.HasSuffix(file.Name, ".model") {
+			total++
+		}
+	}
+	return total
+}
+
+func analyzeMaterialUsage(source archive, progress itemProgressFunc) (projectMaterialUsage, error) {
+	total := materialUsageWorkTotal(source)
+	current := 0
 	modelSettings, err := readMember(source.files[modelSettingsName])
 	if err != nil {
 		return projectMaterialUsage{}, fmt.Errorf("read model settings: %w", err)
 	}
+	current++
+	reportItemProgress(progress, current, total, modelSettingsName)
 	mainModel, err := readMember(source.files[mainModelName])
 	if err != nil {
 		return projectMaterialUsage{}, fmt.Errorf("read main model: %w", err)
 	}
+	current++
+	reportItemProgress(progress, current, total, mainModelName)
 
 	usage := projectMaterialUsage{Total: make(materialUsage)}
 	assignments, err := modelAssignments(modelSettings, mainModel, &usage)
 	if err != nil {
 		return projectMaterialUsage{}, err
 	}
-	for name, file := range source.files {
-		if !strings.HasSuffix(name, ".model") || !hasAssignmentsForPath(assignments, name) {
+	for _, file := range source.reader.File {
+		name := file.Name
+		if !strings.HasSuffix(name, ".model") {
+			continue
+		}
+		if !hasAssignmentsForPath(assignments, name) {
+			current++
+			reportItemProgress(progress, current, total, name)
 			continue
 		}
 		data, err := readMember(file)
@@ -170,6 +192,8 @@ func analyzeMaterialUsage(source archive) (projectMaterialUsage, error) {
 		if err := measureModelUsage(data, name, assignments, &usage); err != nil {
 			return projectMaterialUsage{}, fmt.Errorf("analyze %s: %w", name, err)
 		}
+		current++
+		reportItemProgress(progress, current, total, name)
 	}
 	return usage, nil
 }

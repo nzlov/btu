@@ -51,11 +51,14 @@ func TestConvertReplaceOverwritesExistingOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var progressEvents []Progress
 	report, err := Convert(context.Background(), Request{
 		Source:  sourcePath,
 		Output:  outputPath,
 		Replace: true,
-	}, nil)
+	}, func(progress Progress) {
+		progressEvents = append(progressEvents, progress)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +70,104 @@ func TestConvertReplaceOverwritesExistingOutput(t *testing.T) {
 		t.Fatalf("replacement is not a 3MF archive: %v", err)
 	}
 	reader.Close()
+	lastStage := -1
+	completedItems := map[string]bool{}
+	for _, event := range progressEvents {
+		if event.Current < lastStage {
+			t.Fatalf("progress moved backwards: %+v", progressEvents)
+		}
+		lastStage = event.Current
+		if event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
+			completedItems[event.Stage] = true
+		}
+	}
+	if len(progressEvents) == 0 || progressEvents[0].Current != 0 || progressEvents[len(progressEvents)-1].Current != 6 {
+		t.Fatalf("progress endpoints = %+v", progressEvents)
+	}
+	for _, stage := range []string{"Analyze materials", "Rewrite 3MF package", "Verify output"} {
+		if !completedItems[stage] {
+			t.Fatalf("stage %q did not report exact completion: %+v", stage, progressEvents)
+		}
+	}
+}
+
+func TestPreviewColorPlanReturnsEditableBaseOnlySequence(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour": []string{"#FF0000"},
+		"filament_type":   []string{"PLA"},
+		"nozzle_diameter": []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/></config>`,
+	})
+
+	var progressEvents []Progress
+	sequence, err := PreviewColorPlan(context.Background(), Request{Source: sourcePath}, func(progress Progress) {
+		progressEvents = append(progressEvents, progress)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sequence.Source) != 1 || len(sequence.Output) != 4 {
+		t.Fatalf("sequence = %+v", sequence)
+	}
+	source := sequence.Source[0]
+	if source.OutputSlot < 1 || source.OutputSlot > 4 || !sequence.Output[source.OutputSlot-1].Editable {
+		t.Fatalf("source mapping is not editable: source=%+v outputs=%+v", source, sequence.Output)
+	}
+	for _, output := range sequence.Output {
+		if !output.Base || output.Mixed {
+			t.Fatalf("base-only preview contains non-base output: %+v", output)
+		}
+	}
+	if len(progressEvents) == 0 || progressEvents[0].Current != 0 || progressEvents[len(progressEvents)-1].Current != 3 {
+		t.Fatalf("preview progress endpoints = %+v", progressEvents)
+	}
+	analysisComplete := false
+	for _, event := range progressEvents {
+		if event.Stage == "Analyze color plan" && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
+			analysisComplete = true
+		}
+	}
+	if !analysisComplete {
+		t.Fatalf("preview analysis did not report exact completion: %+v", progressEvents)
+	}
+}
+
+func TestPreviewColorPlanCompletesProgressWhenReviewIsRequired(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour": []string{"#5E43B7"},
+		"filament_type":   []string{"PLA"},
+		"nozzle_diameter": []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/></config>`,
+	})
+
+	var progressEvents []Progress
+	_, err := PreviewColorPlan(context.Background(), Request{Source: sourcePath}, func(progress Progress) {
+		progressEvents = append(progressEvents, progress)
+	})
+	var required *FullSpectrumRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("error = %v, want FullSpectrumRequiredError", err)
+	}
+	if len(progressEvents) == 0 || progressEvents[len(progressEvents)-1].Current != 3 {
+		t.Fatalf("preview progress did not complete before review: %+v", progressEvents)
+	}
+	analysisComplete := false
+	for _, event := range progressEvents {
+		if event.Stage == "Analyze color plan" && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
+			analysisComplete = true
+		}
+	}
+	if !analysisComplete {
+		t.Fatalf("preview analysis did not report exact completion: %+v", progressEvents)
+	}
 }
 
 func TestConvertNativeMixedProject(t *testing.T) {
@@ -108,6 +209,13 @@ func TestConvertNativeMixedProject(t *testing.T) {
 		modelSettingsName:       `<config><metadata key="extruder" value="4"/></config>`,
 		"Metadata/plate_1.json": `{"first_extruder":4,"nozzle_diameter":0.6}`,
 	})
+	preview, err := PreviewColorPlan(context.Background(), Request{Source: sourcePath, Template: templatePath}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Source) != 4 || len(preview.Output) != 5 || !preview.Output[4].Mixed || preview.Output[4].Editable {
+		t.Fatalf("native mixed preview = %+v", preview)
+	}
 
 	report, err := Convert(context.Background(), Request{Source: sourcePath, Template: templatePath, Output: outputPath}, nil)
 	if err != nil {
@@ -169,10 +277,12 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	})
 
 	report, err := Convert(context.Background(), Request{
-		Source:               sourcePath,
-		Output:               outputPath,
-		FullSpectrum:         true,
-		SubdivideLayerHeight: true,
+		Source:       sourcePath,
+		Output:       outputPath,
+		FullSpectrum: true,
+		LocalZ: LocalZSettings{
+			LayerHeight: true, Infill: true, WholeObjects: true,
+		},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -212,16 +322,57 @@ func TestConvertFullSpectrumColors(t *testing.T) {
 	}
 }
 
-func TestConvertFullSpectrumAppliesLayerHeightSubdivisionChoice(t *testing.T) {
+func TestConvertReplacesSharedMixedOutputAndCompactsDefinitions(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.3mf")
+	outputPath := filepath.Join(directory, "output.3mf")
+	writeTest3MF(t, sourcePath, map[string]any{
+		"filament_colour": []string{"#5E43B7", "#5E43B7", "#00AE42"},
+		"filament_type":   []string{"PLA", "PLA", "PLA"},
+		"nozzle_diameter": []string{"0.4"},
+	}, map[string]string{
+		mainModelName:     `<model><metadata name="Application">BambuStudio-source</metadata></model>`,
+		modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="2"/><metadata key="extruder" value="3"/></config>`,
+	})
+
+	report, err := Convert(context.Background(), Request{
+		Source:       sourcePath,
+		Output:       outputPath,
+		FullSpectrum: true,
+		MaterialReplacements: map[int]MaterialReplacement{
+			1: {BaseSlot: 1},
+			2: {BaseSlot: 1},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMapping := map[int]int{1: 1, 2: 1, 3: 5}
+	if report.VirtualMixes != 1 || !reflect.DeepEqual(report.PhysicalMapping, wantMapping) {
+		t.Fatalf("report = %+v, want one compacted mix and mapping %v", report, wantMapping)
+	}
+	settings := readTestJSONMember(t, outputPath, projectSettingsName)
+	if definitions, _ := settings["mixed_filament_definitions"].(string); definitions == "" || strings.Contains(definitions, ";") {
+		t.Fatalf("mixed definitions = %q, want one definition", definitions)
+	}
+	modelSettings := readTestMember(t, outputPath, modelSettingsName)
+	if strings.Count(modelSettings, `value="1"`) != 2 || strings.Count(modelSettings, `value="5"`) != 1 {
+		t.Fatalf("model references were not replaced and compacted: %s", modelSettings)
+	}
+}
+
+func TestConvertFullSpectrumAppliesIndependentLocalZChoices(t *testing.T) {
 	tests := []struct {
-		name       string
-		subdivide  bool
-		wantOption string
-		colors     []string
+		name   string
+		localZ LocalZSettings
+		want   map[string]string
+		colors []string
 	}{
-		{name: "enabled", subdivide: true, wantOption: "1"},
-		{name: "disabled", subdivide: false, wantOption: "0"},
-		{name: "enabled without virtual mixes", subdivide: true, wantOption: "1", colors: []string{"#0000FF", "#FF0000", "#FFFF00", "#808080"}},
+		{name: "disabled", want: map[string]string{"dithering_local_z_mode": "0", "dithering_local_z_infill": "0", "dithering_local_z_whole_objects": "0"}},
+		{name: "layer height only", localZ: LocalZSettings{LayerHeight: true}, want: map[string]string{"dithering_local_z_mode": "1", "dithering_local_z_infill": "0", "dithering_local_z_whole_objects": "0"}},
+		{name: "infill only", localZ: LocalZSettings{Infill: true}, want: map[string]string{"dithering_local_z_mode": "0", "dithering_local_z_infill": "1", "dithering_local_z_whole_objects": "0"}},
+		{name: "whole objects only", localZ: LocalZSettings{WholeObjects: true}, want: map[string]string{"dithering_local_z_mode": "0", "dithering_local_z_infill": "0", "dithering_local_z_whole_objects": "1"}},
+		{name: "all enabled without virtual mixes", localZ: LocalZSettings{LayerHeight: true, Infill: true, WholeObjects: true}, want: map[string]string{"dithering_local_z_mode": "1", "dithering_local_z_infill": "1", "dithering_local_z_whole_objects": "1"}, colors: []string{"#0000FF", "#FF0000", "#FFFF00", "#808080"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -247,10 +398,7 @@ func TestConvertFullSpectrumAppliesLayerHeightSubdivisionChoice(t *testing.T) {
 			})
 
 			_, err := Convert(context.Background(), Request{
-				Source:               sourcePath,
-				Output:               outputPath,
-				FullSpectrum:         true,
-				SubdivideLayerHeight: test.subdivide,
+				Source: sourcePath, Output: outputPath, FullSpectrum: true, LocalZ: test.localZ,
 			}, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -259,13 +407,9 @@ func TestConvertFullSpectrumAppliesLayerHeightSubdivisionChoice(t *testing.T) {
 			if got := settings["prime_volume"]; got != "20" {
 				t.Fatalf("prime_volume = %v, want 20", got)
 			}
-			for _, key := range []string{
-				"dithering_local_z_mode",
-				"dithering_local_z_whole_objects",
-				"dithering_local_z_infill",
-			} {
-				if got := settings[key]; got != test.wantOption {
-					t.Fatalf("%s = %v, want %s", key, got, test.wantOption)
+			for key, want := range test.want {
+				if got := settings[key]; got != want {
+					t.Fatalf("%s = %v, want %s", key, got, want)
 				}
 			}
 		})
@@ -310,11 +454,8 @@ func TestConvertMarksChangedProjectSettingsAsOverrides(t *testing.T) {
 	})
 
 	_, err := Convert(context.Background(), Request{
-		Source:               sourcePath,
-		Template:             templatePath,
-		Output:               outputPath,
-		FullSpectrum:         true,
-		SubdivideLayerHeight: true,
+		Source: sourcePath, Template: templatePath, Output: outputPath, FullSpectrum: true,
+		LocalZ: LocalZSettings{LayerHeight: true, Infill: true, WholeObjects: true},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

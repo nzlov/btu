@@ -16,8 +16,9 @@ import (
 )
 
 type convertFunc func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error)
+type previewColorPlanFunc func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.ColorSequence, error)
 type confirmFunc func(context.Context, *os.File, string) (bool, error)
-type selectMixModesFunc func(context.Context, *os.File, []progressui.MixModeRow, []progressui.MixModeOption) ([]string, error)
+type selectColorPlanFunc func(context.Context, *os.File, []progressui.ColorSourceRow, []progressui.ColorOutputRow, []progressui.MixModeOption, progressui.LocalZSelection) (progressui.ColorPlanResult, error)
 
 func Run(args []string, stdout, stderr *os.File) int {
 	return runWithPrompts(
@@ -28,9 +29,10 @@ func Run(args []string, stdout, stderr *os.File) int {
 		func(ctx context.Context, output *os.File, prompt string) (bool, error) {
 			return progressui.Confirm(ctx, os.Stdin, output, prompt)
 		},
-		func(ctx context.Context, output *os.File, rows []progressui.MixModeRow, options []progressui.MixModeOption) ([]string, error) {
-			return progressui.SelectMixModes(ctx, os.Stdin, output, rows, options)
+		func(ctx context.Context, output *os.File, sources []progressui.ColorSourceRow, colors []progressui.ColorOutputRow, options []progressui.MixModeOption, localZ progressui.LocalZSelection) (progressui.ColorPlanResult, error) {
+			return progressui.SelectColorPlan(ctx, os.Stdin, output, sources, colors, options, localZ)
 		},
+		threemf.PreviewColorPlan,
 	)
 }
 
@@ -43,15 +45,18 @@ func run(args []string, stdout, stderr *os.File, convert convertFunc) int {
 		func(context.Context, *os.File, string) (bool, error) {
 			return false, errors.New("confirmation was not expected")
 		},
-		func(context.Context, *os.File, []progressui.MixModeRow, []progressui.MixModeOption) ([]string, error) {
-			return nil, errors.New("mix mode selection was not expected")
+		func(context.Context, *os.File, []progressui.ColorSourceRow, []progressui.ColorOutputRow, []progressui.MixModeOption, progressui.LocalZSelection) (progressui.ColorPlanResult, error) {
+			return progressui.ColorPlanResult{}, nil
+		},
+		func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.ColorSequence, error) {
+			return threemf.ColorSequence{}, nil
 		},
 	)
 }
 
 // GLUE: keeps Bubble Tea prompts injectable without leaking terminal concerns into conversion.
-func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectMixModes selectMixModesFunc) int {
-	command := newCommand(stdout, stderr, convert, confirm, selectMixModes)
+func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectColorPlan selectColorPlanFunc, previewColorPlan previewColorPlanFunc) int {
+	command := newCommand(stdout, stderr, convert, confirm, selectColorPlan, previewColorPlan)
 	osArgs := append([]string{"btu"}, args...)
 	if err := command.Run(context.Background(), osArgs); err != nil {
 		fmt.Fprintf(stderr, "btu: %v\n", err)
@@ -64,7 +69,7 @@ func runWithPrompts(args []string, stdout, stderr *os.File, convert convertFunc,
 	return 0
 }
 
-func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectMixModes selectMixModesFunc) *urfavecli.Command {
+func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFunc, selectColorPlan selectColorPlanFunc, previewColorPlan previewColorPlanFunc) *urfavecli.Command {
 	nozzleFlag := &urfavecli.StringFlag{
 		Name:     "nozzle",
 		Aliases:  []string{"n"},
@@ -96,7 +101,7 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 	}
 	subdivideLayerHeightFlag := &urfavecli.BoolWithInverseFlag{
 		Name:     "subdivide-layer-height",
-		Usage:    "subdivide mixed-color layers across the whole object and infill",
+		Usage:    "enable or disable all three Local-Z subdivision settings",
 		OnlyOnce: true,
 	}
 	return &urfavecli.Command{
@@ -164,17 +169,22 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 				output = defaultOutputPath(source)
 			}
 			request := threemf.Request{
-				Source:               source,
-				Template:             command.String("template"),
-				Output:               output,
-				Replace:              command.Bool("replace"),
-				Nozzle:               command.String("nozzle"),
-				Palette:              palette,
-				FullSpectrum:         command.Bool("full-spectrum"),
-				SubdivideLayerHeight: command.Bool("subdivide-layer-height"),
-				MixMode:              mixMode,
+				Source:       source,
+				Template:     command.String("template"),
+				Output:       output,
+				Replace:      command.Bool("replace"),
+				Nozzle:       command.String("nozzle"),
+				Palette:      palette,
+				FullSpectrum: command.Bool("full-spectrum"),
+				MixMode:      mixMode,
 			}
-			subdivideLayerHeightSelected := command.IsSet("subdivide-layer-height")
+			localZSelected := command.IsSet("subdivide-layer-height")
+			if localZSelected {
+				enabled := command.Bool("subdivide-layer-height")
+				request.LocalZ = threemf.LocalZSettings{
+					LayerHeight: enabled, Infill: enabled, WholeObjects: enabled,
+				}
+			}
 			convertRequest := func() (threemf.Report, error) {
 				return progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.Report, error) {
 					return convert(ctx, request, func(event threemf.Progress) {
@@ -182,16 +192,68 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 					})
 				})
 			}
+			previewRequest := func() (threemf.ColorSequence, error) {
+				return progressui.Run(ctx, stderr, func(progress func(progressui.Progress)) (threemf.ColorSequence, error) {
+					return previewColorPlan(ctx, request, func(event threemf.Progress) {
+						progress(progressui.Progress(event))
+					})
+				})
+			}
+			reviewSequence := func(sequence threemf.ColorSequence) error {
+				if len(sequence.Output) == 0 {
+					return nil
+				}
+				sources, outputs, options := colorPlanRows(sequence, request.MixMode)
+				selected, selectionErr := selectColorPlan(ctx, stderr, sources, outputs, options, localZSelection(request.LocalZ))
+				if selectionErr != nil {
+					return fmt.Errorf("%w; color-plan review requires an interactive terminal", selectionErr)
+				}
+				request.LocalZ = localZSettings(selected.LocalZ)
+				localZSelected = true
+				return applyColorPlanSelection(&request, sequence, selected)
+			}
+
+			if request.FullSpectrum {
+				if !localZSelected {
+					selection, selectionErr := selectColorPlan(ctx, stderr, nil, nil, nil, localZSelection(request.LocalZ))
+					if selectionErr != nil {
+						return urfavecli.Exit(fmt.Errorf("%w; rerun with --subdivide-layer-height or --no-subdivide-layer-height", selectionErr), 1)
+					}
+					request.LocalZ = localZSettings(selection.LocalZ)
+					localZSelected = true
+				}
+			} else {
+				sequence, previewErr := previewRequest()
+				var required *threemf.FullSpectrumRequiredError
+				if errors.As(previewErr, &required) {
+					accepted, confirmErr := confirm(ctx, stderr, fmt.Sprintf("Source declares %d colors; %d need mixing. Generate them with full-spectrum mixing?", required.ColorCount, required.NonBaseCount))
+					if confirmErr != nil {
+						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum and --subdivide-layer-height or --no-subdivide-layer-height", confirmErr), 1)
+					}
+					if accepted {
+						request.FullSpectrum = true
+						sequence = required.Sequence
+						previewErr = nil
+					} else {
+						request.PreserveMaterialSlots = true
+						sequence, previewErr = previewRequest()
+					}
+				} else if previewErr != nil {
+					return urfavecli.Exit(previewErr, 1)
+				}
+				if request.FullSpectrum && len(sequence.Output) == 0 {
+					sequence, previewErr = previewRequest()
+				}
+				if previewErr != nil {
+					return urfavecli.Exit(previewErr, 1)
+				}
+				if reviewErr := reviewSequence(sequence); reviewErr != nil {
+					return urfavecli.Exit(reviewErr, 1)
+				}
+			}
+
 			var report threemf.Report
 			for {
-				if request.FullSpectrum && !subdivideLayerHeightSelected {
-					accepted, confirmErr := confirm(ctx, stderr, "Enable mixed-color layer-height subdivision across the whole object and infill?")
-					if confirmErr != nil {
-						return urfavecli.Exit(fmt.Errorf("%w; rerun with --subdivide-layer-height or --no-subdivide-layer-height", confirmErr), 1)
-					}
-					request.SubdivideLayerHeight = accepted
-					subdivideLayerHeightSelected = true
-				}
 				report, err = convertRequest()
 				if err == nil {
 					break
@@ -209,42 +271,6 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 					request.Replace = true
 					continue
 				}
-
-				var required *threemf.FullSpectrumRequiredError
-				if errors.As(err, &required) && !request.FullSpectrum && !request.PreserveMaterialSlots {
-					accepted, confirmErr := confirm(ctx, stderr, fmt.Sprintf("Source declares %d colors; %d need mixing. Generate them with full-spectrum mixing?", required.ColorCount, required.NonBaseCount))
-					if confirmErr != nil {
-						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum", confirmErr), 1)
-					}
-					if !accepted {
-						request.PreserveMaterialSlots = true
-						continue
-					}
-					request.FullSpectrum = true
-					if len(required.Colors) == 0 {
-						continue
-					}
-					rows, options := mixModeRows(required.Colors, request.MixMode)
-					selected, selectionErr := selectMixModes(ctx, stderr, rows, options)
-					if selectionErr != nil {
-						return urfavecli.Exit(fmt.Errorf("%w; rerun with --full-spectrum --mix-mode %s", selectionErr, request.MixMode), 1)
-					}
-					if len(selected) != len(required.Colors) {
-						return urfavecli.Exit(fmt.Errorf("mix mode selection returned %d rows for %d source colors", len(selected), len(required.Colors)), 1)
-					}
-					request.MaterialMixModes = make(map[int]threemf.MixMode)
-					for index, color := range required.Colors {
-						mode, parseErr := threemf.ParseMixMode(selected[index])
-						if parseErr != nil {
-							return urfavecli.Exit(parseErr, 1)
-						}
-						for _, material := range color.MaterialIDs {
-							request.MaterialMixModes[material] = mode
-						}
-					}
-					continue
-				}
-
 				return urfavecli.Exit(err, 1)
 			}
 
@@ -276,37 +302,114 @@ func newCommand(stdout, stderr *os.File, convert convertFunc, confirm confirmFun
 	}
 }
 
-func mixModeRows(colors []threemf.MixModeColor, defaultMode threemf.MixMode) ([]progressui.MixModeRow, []progressui.MixModeOption) {
+func colorPlanRows(sequence threemf.ColorSequence, defaultMode threemf.MixMode) ([]progressui.ColorSourceRow, []progressui.ColorOutputRow, []progressui.MixModeOption) {
 	options := []progressui.MixModeOption{
 		{Label: "Ratio", Value: threemf.MixModeRatio.String()},
 		{Label: "Cycle", Value: threemf.MixModeCycle.String()},
 		{Label: "Match", Value: threemf.MixModeMatch.String()},
 		{Label: "Gradient", Value: threemf.MixModeGradient.String()},
 	}
-	selected := 0
-	for index, option := range options {
-		if option.Value == defaultMode.String() {
-			selected = index
+	sources := make([]progressui.ColorSourceRow, len(sequence.Source))
+	for index, source := range sequence.Source {
+		sources[index] = progressui.ColorSourceRow{
+			Slot: source.Slot, Color: source.Color, Used: source.Used, OutputSlot: source.OutputSlot,
+		}
+	}
+	outputs := make([]progressui.ColorOutputRow, len(sequence.Output))
+	for index, output := range sequence.Output {
+		mode := output.Mode
+		if mode == "" {
+			mode = defaultMode
+		}
+		selected := 0
+		for optionIndex, option := range options {
+			if option.Value == mode.String() {
+				selected = optionIndex
+				break
+			}
+		}
+		outputs[index] = progressui.ColorOutputRow{
+			Slot: output.Slot, Color: output.Color, Base: output.Base, Mixed: output.Mixed, Editable: output.Editable, Mode: selected,
+			ReplacementSlot: output.Slot,
+		}
+	}
+	hasMixed := false
+	for _, output := range sequence.Output {
+		if output.Mixed {
+			hasMixed = true
 			break
 		}
 	}
-	rows := make([]progressui.MixModeRow, len(colors))
-	for index, color := range colors {
-		ids := make([]string, len(color.MaterialIDs))
-		for idIndex, material := range color.MaterialIDs {
-			ids[idIndex] = fmt.Sprintf("T%d", material)
-		}
-		state := "unused"
-		if color.Used {
-			state = "used"
-		}
-		rows[index] = progressui.MixModeRow{
-			Label:    fmt.Sprintf("%s (%s)", strings.Join(ids, "/"), state),
-			Color:    color.Color,
-			Selected: selected,
+	if !hasMixed {
+		options = nil
+	}
+	return sources, outputs, options
+}
+
+// GLUE: translates terminal output slots into planner references that survive output deduplication and renumbering.
+func applyColorPlanSelection(request *threemf.Request, sequence threemf.ColorSequence, selected progressui.ColorPlanResult) error {
+	outputBySlot := make(map[int]threemf.OutputColorSlot, len(sequence.Output))
+	expected := 0
+	for _, output := range sequence.Output {
+		outputBySlot[output.Slot] = output
+		if output.Editable {
+			expected++
 		}
 	}
-	return rows, options
+	if len(selected.Colors) != expected {
+		return fmt.Errorf("color order review returned %d rows for %d editable outputs", len(selected.Colors), expected)
+	}
+	request.MaterialMixModes = make(map[int]threemf.MixMode)
+	request.MaterialReplacements = make(map[int]threemf.MaterialReplacement)
+	seen := make(map[int]bool, len(selected.Colors))
+	for _, selection := range selected.Colors {
+		color, found := outputBySlot[selection.OutputSlot]
+		if !found || !color.Editable || seen[selection.OutputSlot] {
+			return fmt.Errorf("color order review references unknown editable output T%d", selection.OutputSlot)
+		}
+		seen[selection.OutputSlot] = true
+		if color.Mixed {
+			mode, err := threemf.ParseMixMode(selection.Mode)
+			if err != nil {
+				return err
+			}
+			for _, material := range color.MaterialIDs {
+				request.MaterialMixModes[material] = mode
+			}
+		}
+		if selection.ReplacementSlot == selection.OutputSlot {
+			continue
+		}
+		target, found := outputBySlot[selection.ReplacementSlot]
+		if !found {
+			return fmt.Errorf("color order review references unknown replacement T%d", selection.ReplacementSlot)
+		}
+		replacement := threemf.MaterialReplacement{}
+		if target.Base {
+			replacement.BaseSlot = target.Slot
+		} else if len(target.MaterialIDs) > 0 {
+			replacement.SourceMaterial = target.MaterialIDs[0]
+		} else {
+			return fmt.Errorf("replacement output T%d has no source material", target.Slot)
+		}
+		for _, material := range color.MaterialIDs {
+			request.MaterialReplacements[material] = replacement
+		}
+	}
+	return nil
+}
+
+// GLUE: translates the three UI toggles at the terminal/domain boundary.
+func localZSelection(settings threemf.LocalZSettings) progressui.LocalZSelection {
+	return progressui.LocalZSelection{
+		LayerHeight: settings.LayerHeight, Infill: settings.Infill, WholeObjects: settings.WholeObjects,
+	}
+}
+
+func localZSettings(selection progressui.LocalZSelection) threemf.LocalZSettings {
+	return threemf.LocalZSettings{
+		LayerHeight: selection.LayerHeight, Infill: selection.Infill, WholeObjects: selection.WholeObjects,
+	}
 }
 
 type plateGroup struct {

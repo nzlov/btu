@@ -15,7 +15,8 @@ func TestRunFallsBackToPlainProgressForFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	value, err := Run(context.Background(), output, func(report func(Progress)) (int, error) {
-		report(Progress{Current: 1, Total: 2, Stage: "Analyze"})
+		report(Progress{Current: 1, Total: 2, Stage: "Analyze", Detail: "a.model", ItemCurrent: 1, ItemTotal: 2})
+		report(Progress{Current: 1, Total: 2, Stage: "Analyze", Detail: "b.model", ItemCurrent: 2, ItemTotal: 2})
 		report(Progress{Current: 2, Total: 2, Stage: "Complete"})
 		return 42, nil
 	})
@@ -33,8 +34,27 @@ func TestRunFallsBackToPlainProgressForFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(data)
-	if !strings.Contains(got, "[1/2] Analyze") || !strings.Contains(got, "[2/2] Complete") {
+	if !strings.Contains(got, "[1/2] Analyze [1/2]: a.model") || !strings.Contains(got, "[1/2] Analyze [2/2]: b.model") || !strings.Contains(got, "[2/2] Complete") {
 		t.Fatalf("plain progress = %q", got)
+	}
+}
+
+func TestProgressModelShowsExactItemProgressWithinTerminalWidth(t *testing.T) {
+	model := model[int]{
+		width: 48,
+		progress: Progress{
+			Current: 3, Total: 6, Stage: "Rewrite 3MF package",
+			ItemCurrent: 7, ItemTotal: 10, Detail: "Metadata/very-long-model-member-name.model",
+		},
+	}
+	view := model.View()
+	if !strings.Contains(view, "50%  Rewrite 3MF package") || !strings.Contains(view, "7/10 (70%)") {
+		t.Fatalf("progress view = %q", view)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(view, "\n"), "\n") {
+		if len([]rune(line)) > model.width {
+			t.Fatalf("line width = %d, want <= %d: %q", len([]rune(line)), model.width, line)
+		}
 	}
 }
 

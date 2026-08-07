@@ -293,8 +293,72 @@ func TestPlanRequestsChoiceForEveryDeclaredNonBaseColor(t *testing.T) {
 	if required.ColorCount != 6 || required.NonBaseCount != 2 {
 		t.Fatalf("unexpected required colors: %+v", required)
 	}
-	if len(required.Colors) != 2 || required.Colors[0].Color != "#5E43B7" || !required.Colors[0].Used || required.Colors[1].Color != "#00AE42" {
-		t.Fatalf("mix mode colors = %+v", required.Colors)
+	if len(required.Sequence.Source) != 6 || len(required.Sequence.Output) < 6 {
+		t.Fatalf("color sequence = %+v", required.Sequence)
+	}
+	if !required.Sequence.Source[4].Used || required.Sequence.Source[5].Used {
+		t.Fatalf("source usage = %+v", required.Sequence.Source)
+	}
+	for _, source := range required.Sequence.Source {
+		if source.Slot < 1 || source.OutputSlot < 1 {
+			t.Fatalf("source sequence contains an invalid slot: %+v", source)
+		}
+	}
+	for slot, output := range required.Sequence.Output {
+		if output.Slot != slot+1 || output.Color == "" {
+			t.Fatalf("output sequence contains an invalid slot: %+v", output)
+		}
+		if output.Slot <= 4 && !output.Base {
+			t.Fatalf("physical output T%d is not marked as base", output.Slot)
+		}
+	}
+}
+
+func TestPlanReplacesSharedMixedOutputWithBaseAndCompactsSlots(t *testing.T) {
+	source := map[string]any{
+		"filament_colour": []string{"#5E43B7", "#5E43B7", "#00AE42"},
+		"filament_type":   []string{"PLA", "PLA", "PLA"},
+	}
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), materialPlanOptions{
+		fullSpectrum: true,
+		replacements: map[int]MaterialReplacement{
+			1: {BaseSlot: 1},
+			2: {BaseSlot: 1},
+		},
+	}, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.virtualMixes != 1 {
+		t.Fatalf("virtual mixes = %d, want 1", plan.virtualMixes)
+	}
+	want := map[int]int{1: 1, 2: 1, 3: 5}
+	if !reflect.DeepEqual(plan.allMapping, want) {
+		t.Fatalf("mapping = %v, want %v", plan.allMapping, want)
+	}
+}
+
+func TestPlanReplacesSharedMixedOutputWithExistingMix(t *testing.T) {
+	source := map[string]any{
+		"filament_colour": []string{"#5E43B7", "#5E43B7", "#00AE42"},
+		"filament_type":   []string{"PLA", "PLA", "PLA"},
+	}
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), materialPlanOptions{
+		fullSpectrum: true,
+		replacements: map[int]MaterialReplacement{
+			1: {SourceMaterial: 3},
+			2: {SourceMaterial: 3},
+		},
+	}, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.virtualMixes != 1 {
+		t.Fatalf("virtual mixes = %d, want 1", plan.virtualMixes)
+	}
+	want := map[int]int{1: 5, 2: 5, 3: 5}
+	if !reflect.DeepEqual(plan.allMapping, want) {
+		t.Fatalf("mapping = %v, want %v", plan.allMapping, want)
 	}
 }
 
@@ -400,6 +464,77 @@ func TestPlanPreservedSlotsStartWithRequestedColorOrder(t *testing.T) {
 	wantMapping := map[int]int{1: 5, 2: 6}
 	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
 		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
+	}
+}
+
+func TestPlanPreservedSlotsReplacesGroupsAndCompactsOutputs(t *testing.T) {
+	source := map[string]any{
+		"filament_colour": []string{"#5E43B7", "#00AE42", "#FCE300"},
+		"filament_type":   []string{"PLA", "PETG", "ABS"},
+	}
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), materialPlanOptions{
+		preserveSlots: true,
+		replacements: map[int]MaterialReplacement{
+			1: {SourceMaterial: 3},
+			2: {BaseSlot: 2},
+		},
+	}, projectMaterialUsage{Total: materialUsage{1: 10, 2: 10, 3: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMapping := map[int]int{1: 5, 2: 2, 3: 5}
+	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
+		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
+	}
+	if !reflect.DeepEqual(plan.preservedSources, []int{3}) {
+		t.Fatalf("preserved sources = %v, want [3]", plan.preservedSources)
+	}
+	wantColors := append(DefaultPalette().outputColors(), "#FCE300")
+	if !reflect.DeepEqual(plan.outputColors(), wantColors) {
+		t.Fatalf("colors = %v, want %v", plan.outputColors(), wantColors)
+	}
+	sequence, err := makeColorSequence(stringSlice(source["filament_colour"]), materialUsage{1: 10, 2: 10, 3: 10}, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sequence.Output) != 5 || sequence.Output[4].Mixed || !sequence.Output[4].Editable || !reflect.DeepEqual(sequence.Output[4].MaterialIDs, []int{1, 3}) {
+		t.Fatalf("preserved output = %+v", sequence.Output)
+	}
+}
+
+func TestMergePreservedMaterialSettingsSelectsRetainedSourceProfiles(t *testing.T) {
+	source := map[string]any{
+		"filament_colour":      []string{"#5E43B7", "#00AE42", "#FCE300"},
+		"filament_type":        []string{"PLA", "PETG", "ABS"},
+		"flush_volumes_vector": []string{"10", "11", "20", "21", "30", "31"},
+		"flush_volumes_matrix": []string{"0", "1", "2", "3", "4", "5", "6", "7", "8"},
+	}
+	plan, err := planMaterials(source, testTemplate(), DefaultPalette(), materialPlanOptions{
+		preserveSlots: true,
+		replacements: map[int]MaterialReplacement{
+			1: {SourceMaterial: 3},
+			2: {BaseSlot: 2},
+		},
+	}, projectMaterialUsage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := map[string]any{
+		"filament_colour":      []string{"#00FFFF", "#FF00FF", "#FFFF00", "#808080"},
+		"filament_type":        []string{"BASE1", "BASE2", "BASE3", "BASE4"},
+		"flush_volumes_vector": []string{"1", "1", "2", "2", "3", "3", "4", "4"},
+		"flush_volumes_matrix": repeatedSlotValue("0", 16),
+	}
+	mergeMaterialSettings(target, source, plan)
+	if got := stringSlice(target["filament_type"]); !reflect.DeepEqual(got, []string{"BASE1", "BASE2", "BASE3", "BASE4", "ABS"}) {
+		t.Fatalf("filament types = %v", got)
+	}
+	if got := stringSlice(target["flush_volumes_vector"]); !reflect.DeepEqual(got, []string{"1", "1", "2", "2", "3", "3", "4", "4", "30", "31"}) {
+		t.Fatalf("flush vector = %v", got)
+	}
+	matrix := stringSlice(target["flush_volumes_matrix"])
+	if len(matrix) != 25 || matrix[24] != "8" {
+		t.Fatalf("flush matrix = %v", matrix)
 	}
 }
 

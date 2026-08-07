@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,12 @@ var (
 	processPattern  = regexp.MustCompile(`^Metadata/process_settings_\d+\.config$`)
 )
 
+type LocalZSettings struct {
+	LayerHeight  bool
+	Infill       bool
+	WholeObjects bool
+}
+
 type Request struct {
 	Source                string
 	Template              string
@@ -44,10 +51,11 @@ type Request struct {
 	Nozzle                string
 	Palette               Palette
 	FullSpectrum          bool
-	SubdivideLayerHeight  bool
+	LocalZ                LocalZSettings
 	PreserveMaterialSlots bool
 	MixMode               MixMode
 	MaterialMixModes      map[int]MixMode
+	MaterialReplacements  map[int]MaterialReplacement
 }
 
 type OutputExistsError struct {
@@ -59,13 +67,23 @@ func (err *OutputExistsError) Error() string {
 }
 
 type Progress struct {
-	Current int
-	Total   int
-	Stage   string
-	Detail  string
+	Current     int
+	Total       int
+	Stage       string
+	Detail      string
+	ItemCurrent int
+	ItemTotal   int
 }
 
 type ProgressFunc func(Progress)
+
+type itemProgressFunc func(current, total int, detail string)
+
+func reportItemProgress(progress itemProgressFunc, current, total int, detail string) {
+	if progress != nil {
+		progress(current, total, detail)
+	}
+}
 
 type Report struct {
 	Mode            string
@@ -79,6 +97,57 @@ type Report struct {
 type archive struct {
 	reader *zip.ReadCloser
 	files  map[string]*zip.File
+}
+
+type conversionAnalysis struct {
+	sourceSettings map[string]any
+	usage          projectMaterialUsage
+	baseline       u1Baseline
+	plan           materialPlan
+}
+
+func PreviewColorPlan(ctx context.Context, request Request, progress ProgressFunc) (ColorSequence, error) {
+	if progress == nil {
+		progress = func(Progress) {}
+	}
+	if request.Source == "" {
+		return ColorSequence{}, fmt.Errorf("source path is required")
+	}
+	palette, err := request.Palette.normalized()
+	if err != nil {
+		return ColorSequence{}, err
+	}
+	progress(Progress{Current: 0, Total: 3, Stage: "Open source", Detail: request.Source})
+	source, err := openArchive(request.Source)
+	if err != nil {
+		return ColorSequence{}, fmt.Errorf("open source: %w", err)
+	}
+	defer source.reader.Close()
+
+	analysisTotal := analyzeConversionWorkTotal(source)
+	progress(Progress{Current: 1, Total: 3, Stage: "Analyze color plan", ItemTotal: analysisTotal})
+	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail string) {
+		progress(Progress{
+			Current: 1, Total: 3, Stage: "Analyze color plan", Detail: detail,
+			ItemCurrent: current, ItemTotal: total,
+		})
+	})
+	if err != nil {
+		var required *FullSpectrumRequiredError
+		if errors.As(err, &required) {
+			progress(Progress{Current: 2, Total: 3, Stage: "Build color editor"})
+			progress(Progress{Current: 3, Total: 3, Stage: "Color plan ready", Detail: fmt.Sprintf("%d source colors", len(required.Sequence.Source))})
+		}
+		return ColorSequence{}, err
+	}
+	progress(Progress{Current: 2, Total: 3, Stage: "Build color editor"})
+	colors := stringSlice(analysis.sourceSettings["filament_colour"])
+	sequence, err := makeColorSequence(colors, analysis.usage.Total, analysis.plan)
+	if err != nil {
+		return ColorSequence{}, err
+	}
+	progress(Progress{Current: 3, Total: 3, Stage: "Color plan ready", Detail: fmt.Sprintf("%d source colors", len(sequence.Source))})
+	return sequence, nil
 }
 
 func Convert(ctx context.Context, request Request, progress ProgressFunc) (Report, error) {
@@ -109,41 +178,30 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		return Report{}, fmt.Errorf("check output: %w", err)
 	}
 
-	progress(Progress{Current: 1, Total: 6, Stage: "Open source"})
+	progress(Progress{Current: 0, Total: 6, Stage: "Open source", Detail: request.Source})
 	source, err := openArchive(request.Source)
 	if err != nil {
 		return Report{}, fmt.Errorf("open source: %w", err)
 	}
 	defer source.reader.Close()
 
-	if err := ctx.Err(); err != nil {
-		return Report{}, err
-	}
-	progress(Progress{Current: 2, Total: 6, Stage: "Analyze materials"})
-	sourceSettings, err := readJSONMap(source.files[projectSettingsName])
-	if err != nil {
-		return Report{}, fmt.Errorf("source project settings: %w", err)
-	}
-	usage, err := analyzeMaterialUsage(source)
-	if err != nil {
-		return Report{}, err
-	}
-	baseline, err := loadRequestedU1Baseline(request.Template, request.Nozzle, sourceSettings)
+	analysisTotal := analyzeConversionWorkTotal(source)
+	progress(Progress{Current: 1, Total: 6, Stage: "Analyze materials", ItemTotal: analysisTotal})
+	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail string) {
+		progress(Progress{
+			Current: 1, Total: 6, Stage: "Analyze materials", Detail: detail,
+			ItemCurrent: current, ItemTotal: total,
+		})
+	})
 	if err != nil {
 		return Report{}, err
 	}
-	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, materialPlanOptions{
-		fullSpectrum:    request.FullSpectrum,
-		preserveSlots:   request.PreserveMaterialSlots,
-		mixMode:         request.MixMode,
-		materialMixMode: request.MaterialMixModes,
-	}, usage)
-	if err != nil {
-		return Report{}, err
-	}
+	sourceSettings := analysis.sourceSettings
+	baseline := analysis.baseline
+	plan := analysis.plan
 
-	progress(Progress{Current: 3, Total: 6, Stage: "Translate mix definitions", Detail: fmt.Sprintf("%d virtual materials", plan.virtualMixes)})
-	mergedSettings, hasProjectProcessSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.SubdivideLayerHeight)
+	progress(Progress{Current: 2, Total: 6, Stage: "Encode project settings", Detail: fmt.Sprintf("%d virtual materials", plan.virtualMixes)})
+	mergedSettings, hasProjectProcessSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.LocalZ)
 	var processData []byte
 	if hasProjectProcessSettings {
 		processSettings := buildProjectProcessSettings(mergedSettings, baseline.projectSettings)
@@ -167,7 +225,8 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		return Report{}, err
 	}
 
-	progress(Progress{Current: 4, Total: 6, Stage: "Rewrite 3MF package"})
+	writeTotal := writeArchiveWorkTotal(source, len(processData) > 0)
+	progress(Progress{Current: 3, Total: 6, Stage: "Rewrite 3MF package", ItemTotal: writeTotal})
 	temporary, err := os.CreateTemp(filepath.Dir(request.Output), "."+filepath.Base(request.Output)+".*.tmp")
 	if err != nil {
 		return Report{}, fmt.Errorf("create temporary output: %w", err)
@@ -181,17 +240,28 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		}
 	}()
 
-	if err := writeArchive(ctx, temporary, source, baseline, projectData, processData, modelSettings, plan); err != nil {
+	if err := writeArchive(ctx, temporary, source, baseline, projectData, processData, modelSettings, plan, func(current, total int, detail string) {
+		progress(Progress{
+			Current: 3, Total: 6, Stage: "Rewrite 3MF package", Detail: detail,
+			ItemCurrent: current, ItemTotal: total,
+		})
+	}); err != nil {
 		return Report{}, err
 	}
 	if err := temporary.Close(); err != nil {
 		return Report{}, fmt.Errorf("close temporary output: %w", err)
 	}
 
-	progress(Progress{Current: 5, Total: 6, Stage: "Verify output"})
-	if err := verifyArchive(temporaryName, plan, hasProjectProcessSettings); err != nil {
+	progress(Progress{Current: 4, Total: 6, Stage: "Verify output"})
+	if err := verifyArchive(temporaryName, plan, hasProjectProcessSettings, func(current, total int, detail string) {
+		progress(Progress{
+			Current: 4, Total: 6, Stage: "Verify output", Detail: detail,
+			ItemCurrent: current, ItemTotal: total,
+		})
+	}); err != nil {
 		return Report{}, err
 	}
+	progress(Progress{Current: 5, Total: 6, Stage: "Publish output", Detail: request.Output})
 	if err := os.Chmod(temporaryName, 0o644); err != nil {
 		return Report{}, fmt.Errorf("set output permissions: %w", err)
 	}
@@ -209,6 +279,51 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		VirtualMixes:    plan.virtualMixes,
 		Plates:          plan.plates,
 	}, nil
+}
+
+func analyzeConversionWorkTotal(source archive) int {
+	return materialUsageWorkTotal(source) + 3
+}
+
+func analyzeConversion(ctx context.Context, source archive, request Request, palette Palette, progress itemProgressFunc) (conversionAnalysis, error) {
+	total := analyzeConversionWorkTotal(source)
+	current := 0
+	if err := ctx.Err(); err != nil {
+		return conversionAnalysis{}, err
+	}
+	sourceSettings, err := readJSONMap(source.files[projectSettingsName])
+	if err != nil {
+		return conversionAnalysis{}, fmt.Errorf("source project settings: %w", err)
+	}
+	current++
+	reportItemProgress(progress, current, total, projectSettingsName)
+	usageTotal := materialUsageWorkTotal(source)
+	usage, err := analyzeMaterialUsage(source, func(usageCurrent, _ int, detail string) {
+		reportItemProgress(progress, current+usageCurrent, total, detail)
+	})
+	if err != nil {
+		return conversionAnalysis{}, err
+	}
+	current += usageTotal
+	baseline, err := loadRequestedU1Baseline(request.Template, request.Nozzle, sourceSettings)
+	if err != nil {
+		return conversionAnalysis{}, err
+	}
+	current++
+	reportItemProgress(progress, current, total, "U1 baseline")
+	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, materialPlanOptions{
+		fullSpectrum:    request.FullSpectrum,
+		preserveSlots:   request.PreserveMaterialSlots,
+		mixMode:         request.MixMode,
+		materialMixMode: request.MaterialMixModes,
+		replacements:    request.MaterialReplacements,
+	}, usage)
+	current++
+	reportItemProgress(progress, current, total, "Material mapping")
+	if err != nil {
+		return conversionAnalysis{}, err
+	}
+	return conversionAnalysis{sourceSettings: sourceSettings, usage: usage, baseline: baseline, plan: plan}, nil
 }
 
 func openArchive(path string) (archive, error) {
@@ -233,15 +348,41 @@ func openArchive(path string) (archive, error) {
 	return archive{reader: reader, files: files}, nil
 }
 
-func writeArchive(ctx context.Context, output *os.File, source archive, baseline u1Baseline, projectData, processData, modelSettings []byte, plan materialPlan) error {
+func skipSourceMember(file *zip.File) bool {
+	return filamentPattern.MatchString(file.Name) || processPattern.MatchString(file.Name)
+}
+
+func writeArchiveWorkTotal(source archive, writeProcessSettings bool) int {
+	total := 0
+	hasSliceInfo := false
+	for _, file := range source.reader.File {
+		if skipSourceMember(file) {
+			continue
+		}
+		total++
+		hasSliceInfo = hasSliceInfo || file.Name == sliceInfoName
+	}
+	if !hasSliceInfo {
+		total++
+	}
+	if writeProcessSettings {
+		total++
+	}
+	return total
+}
+
+func writeArchive(ctx context.Context, output *os.File, source archive, baseline u1Baseline, projectData, processData, modelSettings []byte, plan materialPlan, progress itemProgressFunc) error {
 	writer := zip.NewWriter(output)
 	writtenSliceInfo := false
+	total := writeArchiveWorkTotal(source, len(processData) > 0)
+	current := 0
+	reportItemProgress(progress, current, total, "Prepare output archive")
 	for _, file := range source.reader.File {
 		if err := ctx.Err(); err != nil {
 			writer.Close()
 			return err
 		}
-		if filamentPattern.MatchString(file.Name) || processPattern.MatchString(file.Name) {
+		if skipSourceMember(file) {
 			continue
 		}
 
@@ -300,12 +441,14 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 				writer.Close()
 				return fmt.Errorf("copy %s: %w", file.Name, err)
 			}
-			continue
+		} else {
+			if err := writeModifiedMember(writer, file.FileHeader, data); err != nil {
+				writer.Close()
+				return fmt.Errorf("write %s: %w", file.Name, err)
+			}
 		}
-		if err := writeModifiedMember(writer, file.FileHeader, data); err != nil {
-			writer.Close()
-			return fmt.Errorf("write %s: %w", file.Name, err)
-		}
+		current++
+		reportItemProgress(progress, current, total, file.Name)
 	}
 
 	if !writtenSliceInfo {
@@ -314,6 +457,8 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			writer.Close()
 			return fmt.Errorf("write slice info: %w", err)
 		}
+		current++
+		reportItemProgress(progress, current, total, sliceInfoName)
 	}
 	if len(processData) > 0 {
 		processHeader := zip.FileHeader{Name: processSettingsName, Method: zip.Deflate}
@@ -321,6 +466,8 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			writer.Close()
 			return fmt.Errorf("write process settings: %w", err)
 		}
+		current++
+		reportItemProgress(progress, current, total, processSettingsName)
 	}
 	if err := writer.Close(); err != nil {
 		return fmt.Errorf("finalize output archive: %w", err)
@@ -342,7 +489,7 @@ func writeModifiedMember(writer *zip.Writer, source zip.FileHeader, data []byte)
 	return err
 }
 
-func mergeProjectSettings(source, template map[string]any, plan materialPlan, fullSpectrum, subdivideLayerHeight bool) (map[string]any, bool) {
+func mergeProjectSettings(source, template map[string]any, plan materialPlan, fullSpectrum bool, localZSettings LocalZSettings) (map[string]any, bool) {
 	merged := make(map[string]any, len(template)+8)
 	for key, value := range template {
 		merged[key] = value
@@ -356,18 +503,25 @@ func mergeProjectSettings(source, template map[string]any, plan materialPlan, fu
 	merged["mixed_filament_definitions"] = plan.definitions
 	merged["filament_colour"] = plan.outputColors()
 	localZ := "0"
+	infill := "0"
 	wholeObjects := "0"
 	if fullSpectrum {
 		merged["prime_volume"] = "20"
-		if subdivideLayerHeight {
+		if localZSettings.LayerHeight {
 			localZ = "1"
+		}
+		if localZSettings.Infill {
+			infill = "1"
+		}
+		if localZSettings.WholeObjects {
 			wholeObjects = "1"
 		}
 	} else if !plan.preserveSlots && source["enable_mixed_color_sublayer"] == "1" {
 		localZ = "1"
+		infill = "1"
 	}
 	merged["dithering_local_z_mode"] = localZ
-	merged["dithering_local_z_infill"] = localZ
+	merged["dithering_local_z_infill"] = infill
 	merged["dithering_local_z_whole_objects"] = wholeObjects
 	merged["dithering_step_painted_zones_only"] = "1"
 	directMulticolor := "0"
@@ -532,12 +686,15 @@ func rewritePlate(file *zip.File, baselineSettings map[string]any, mapping map[i
 	return append(encoded, '\n'), nil
 }
 
-func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings bool) error {
+func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings bool, progress itemProgressFunc) error {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return fmt.Errorf("verify output: %w", err)
 	}
 	defer reader.Close()
+	total := len(reader.File) + 1
+	current := 0
+	reportItemProgress(progress, current, total, "Open output archive")
 	found := make(map[string]bool)
 	for _, file := range reader.File {
 		member, err := file.Open()
@@ -553,6 +710,8 @@ func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings boo
 			return fmt.Errorf("verify %s: %w", file.Name, closeErr)
 		}
 		found[file.Name] = true
+		current++
+		reportItemProgress(progress, current, total, file.Name)
 	}
 	for _, required := range []string{projectSettingsName, modelSettingsName, mainModelName} {
 		if !found[required] {
@@ -582,6 +741,8 @@ func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings boo
 			return fmt.Errorf("verify project settings: Local-Z mixing remained enabled")
 		}
 	}
+	current++
+	reportItemProgress(progress, current, total, projectSettingsName)
 	return nil
 }
 

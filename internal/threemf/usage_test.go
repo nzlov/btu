@@ -31,7 +31,7 @@ func TestAnalyzeMaterialUsageMeasuresTransformedMeshArea(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer source.reader.Close()
-	usage, err := analyzeMaterialUsage(source)
+	usage, err := analyzeMaterialUsage(source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestAnalyzeMaterialUsageCountsPaintInsteadOfDefaultMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer source.reader.Close()
-	usage, err := analyzeMaterialUsage(source)
+	usage, err := analyzeMaterialUsage(source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestAnalyzeMaterialUsageSeparatesNamedPlates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer source.reader.Close()
-	usage, err := analyzeMaterialUsage(source)
+	usage, err := analyzeMaterialUsage(source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

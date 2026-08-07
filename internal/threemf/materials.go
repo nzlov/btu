@@ -9,17 +9,20 @@ import (
 )
 
 type materialPlan struct {
-	mode            string
-	physicalMapping map[int]int
-	allMapping      map[int]int
-	sourceSlots     map[int][]int
-	slotColors      []string
-	definitions     string
-	virtualMixes    int
-	hasMultiColor   bool
-	preserveSlots   bool
-	palette         Palette
-	plates          []PlateReport
+	mode             string
+	physicalMapping  map[int]int
+	allMapping       map[int]int
+	sourceSlots      map[int][]int
+	slotColors       []string
+	definitions      string
+	virtualMixes     int
+	hasMultiColor    bool
+	preserveSlots    bool
+	palette          Palette
+	plates           []PlateReport
+	recipes          []colorRecipe
+	modes            []MixMode
+	preservedSources []int
 }
 
 type materialPlanOptions struct {
@@ -27,6 +30,7 @@ type materialPlanOptions struct {
 	preserveSlots   bool
 	mixMode         MixMode
 	materialMixMode map[int]MixMode
+	replacements    map[int]MaterialReplacement
 }
 
 type PlateReport struct {
@@ -50,16 +54,37 @@ func (plan materialPlan) colorSummary() string {
 	return plan.palette.String()
 }
 
-type MixModeColor struct {
-	MaterialIDs []int
+type MaterialReplacement struct {
+	BaseSlot       int
+	SourceMaterial int
+}
+
+type ColorSequence struct {
+	Source []SourceColorSlot
+	Output []OutputColorSlot
+}
+
+type SourceColorSlot struct {
+	Slot       int
+	Color      string
+	Used       bool
+	OutputSlot int
+}
+
+type OutputColorSlot struct {
+	Slot        int
 	Color       string
-	Used        bool
+	Base        bool
+	Mixed       bool
+	Editable    bool
+	Mode        MixMode
+	MaterialIDs []int
 }
 
 type FullSpectrumRequiredError struct {
 	ColorCount   int
 	NonBaseCount int
-	Colors       []MixModeColor
+	Sequence     ColorSequence
 }
 
 func (err *FullSpectrumRequiredError) Error() string {
@@ -89,27 +114,35 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 	if firstMixed < 0 {
 		colors := stringSlice(source["filament_colour"])
 		usage = normalizeProjectMaterialUsage(usage, len(colors))
-		colorCount, mixColors, err := inspectMixModeColors(colors, usage.Total)
+		colorCount, nonBaseCount, err := inspectSourceColors(colors)
 		if err != nil {
 			return materialPlan{}, err
 		}
 		if options.preserveSlots {
-			return planPreservedMaterialSlots(colors, palette)
-		}
-		if len(mixColors) > 0 && !options.fullSpectrum {
-			return materialPlan{}, &FullSpectrumRequiredError{
-				ColorCount:   colorCount,
-				NonBaseCount: len(mixColors),
-				Colors:       mixColors,
-			}
+			return planPreservedMaterialSlots(colors, palette, options.replacements)
 		}
 		modes, err := materialMixModes(len(colors), options.mixMode, options.materialMixMode)
 		if err != nil {
 			return materialPlan{}, err
 		}
-		return planMappedMaterials(source, template, palette, usage, modes)
+		if nonBaseCount > 0 && !options.fullSpectrum {
+			preview, err := planMappedMaterials(source, template, palette, usage, modes)
+			if err != nil {
+				return materialPlan{}, err
+			}
+			sequence, err := makeColorSequence(colors, usage.Total, preview)
+			if err != nil {
+				return materialPlan{}, err
+			}
+			return materialPlan{}, &FullSpectrumRequiredError{
+				ColorCount:   colorCount,
+				NonBaseCount: nonBaseCount,
+				Sequence:     sequence,
+			}
+		}
+		return planMappedMaterialsWithReplacements(source, template, palette, usage, modes, options.replacements)
 	}
-	if options.fullSpectrum || options.preserveSlots || len(options.materialMixMode) > 0 {
+	if options.fullSpectrum || options.preserveSlots || len(options.materialMixMode) > 0 || len(options.replacements) > 0 {
 		return materialPlan{}, fmt.Errorf("conversion mode cannot replace a project that already has native mixed materials")
 	}
 
@@ -145,6 +178,7 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 	gradients := stringSlice(source["filament_mixed_gradient"])
 	gradientRanges := stringSlice(source["filament_mixed_gradient_range"])
 	definitions := make([]string, 0, len(flags)-physicalCount)
+	modes := make([]MixMode, len(flags))
 	hasMultiColor := false
 
 	for index := physicalCount; index < len(flags); index++ {
@@ -173,6 +207,7 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 		if gradient {
 			mode = MixModeGradient
 		}
+		modes[index] = mode
 		definition, err := makeDefinition(mappedComponents, weights, mode, sliceAt(gradientRanges, index), stableID)
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("mixed material T%d: %w", index+1, err)
@@ -194,10 +229,15 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 		hasMultiColor:   hasMultiColor,
 		palette:         palette,
 		plates:          reportsForNeutral(usage, palette),
+		modes:           modes,
 	}, nil
 }
 
 func planMappedMaterials(source, template map[string]any, palette Palette, usage projectMaterialUsage, modes []MixMode) (materialPlan, error) {
+	return planMappedMaterialsWithReplacements(source, template, palette, usage, modes, nil)
+}
+
+func planMappedMaterialsWithReplacements(source, template map[string]any, palette Palette, usage projectMaterialUsage, modes []MixMode, replacements map[int]MaterialReplacement) (materialPlan, error) {
 	colors := stringSlice(source["filament_colour"])
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
@@ -225,6 +265,10 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 	if err != nil {
 		return materialPlan{}, err
 	}
+	recipes, effectiveModes, err := applyMaterialReplacements(recipes, modes, palette, replacements)
+	if err != nil {
+		return materialPlan{}, err
+	}
 
 	mapping := make(map[int]int, len(colors))
 	sourceSlots := make(map[int][]int, len(colors))
@@ -238,7 +282,7 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 			continue
 		}
 
-		mode := modes[index]
+		mode := effectiveModes[index]
 		signature := mixSignature(mode, recipe.components, recipe.weights)
 		if target, ok := mixedTargets[signature]; ok {
 			mapping[index+1] = target
@@ -272,7 +316,87 @@ func planMappedMaterials(source, template map[string]any, palette Palette, usage
 		hasMultiColor:   hasMultiColor,
 		palette:         palette,
 		plates:          reportsFromPlatePlans(plans, palette),
+		recipes:         recipes,
+		modes:           effectiveModes,
 	}, nil
+}
+
+func applyMaterialReplacements(recipes []colorRecipe, modes []MixMode, palette Palette, replacements map[int]MaterialReplacement) ([]colorRecipe, []MixMode, error) {
+	result := append([]colorRecipe(nil), recipes...)
+	effectiveModes := append([]MixMode(nil), modes...)
+	for material, replacement := range replacements {
+		if material < 1 || material > len(recipes) {
+			return nil, nil, fmt.Errorf("color replacement references unknown source T%d", material)
+		}
+		hasBase := replacement.BaseSlot != 0
+		hasSource := replacement.SourceMaterial != 0
+		if hasBase == hasSource {
+			return nil, nil, fmt.Errorf("source T%d color replacement must select one base or source target", material)
+		}
+		if hasBase {
+			if replacement.BaseSlot < 1 || replacement.BaseSlot > len(palette.Slots) {
+				return nil, nil, fmt.Errorf("source T%d color replacement references unknown base T%d", material, replacement.BaseSlot)
+			}
+			role := palette.Slots[replacement.BaseSlot-1]
+			result[material-1] = directColorRecipe(roleRGB(role), role, replacement.BaseSlot)
+			continue
+		}
+		if replacement.SourceMaterial < 1 || replacement.SourceMaterial > len(recipes) {
+			return nil, nil, fmt.Errorf("source T%d color replacement references unknown source T%d", material, replacement.SourceMaterial)
+		}
+		result[material-1] = recipes[replacement.SourceMaterial-1]
+		effectiveModes[material-1] = modes[replacement.SourceMaterial-1]
+	}
+	return result, effectiveModes, nil
+}
+
+func makeColorSequence(colors []string, usage materialUsage, plan materialPlan) (ColorSequence, error) {
+	outputCount := len(plan.palette.Slots) + plan.virtualMixes
+	if plan.preserveSlots {
+		outputCount = len(plan.slotColors)
+	}
+	sequence := ColorSequence{
+		Source: make([]SourceColorSlot, len(colors)),
+		Output: make([]OutputColorSlot, outputCount),
+	}
+	for index, color := range plan.palette.outputColors() {
+		sequence.Output[index] = OutputColorSlot{Slot: index + 1, Color: color, Base: true}
+	}
+	for index, value := range colors {
+		color, err := parseColor(value)
+		if err != nil {
+			return ColorSequence{}, fmt.Errorf("source T%d: %w", index+1, err)
+		}
+		material := index + 1
+		target := plan.allMapping[material]
+		if target < 1 || target > len(sequence.Output) {
+			return ColorSequence{}, fmt.Errorf("source T%d maps to invalid output T%d", material, target)
+		}
+		sequence.Source[index] = SourceColorSlot{
+			Slot: material, Color: canonicalColor(color), Used: usage[material] > 0, OutputSlot: target,
+		}
+		output := &sequence.Output[target-1]
+		output.MaterialIDs = append(output.MaterialIDs, material)
+		output.Editable = plan.mode != "native-mixed"
+		if target <= len(plan.palette.Slots) {
+			continue
+		}
+		output.Slot = target
+		output.Mixed = !plan.preserveSlots
+		if output.Color == "" {
+			switch {
+			case plan.preserveSlots:
+				output.Color = plan.slotColors[target-1]
+			case index < len(plan.recipes):
+				output.Color = canonicalColor(plan.recipes[index].preview)
+				output.Mode = plan.modes[index]
+			default:
+				output.Color = canonicalColor(color)
+				output.Mode = plan.modes[index]
+			}
+		}
+	}
+	return sequence, nil
 }
 
 func reportsForNeutral(usage projectMaterialUsage, palette Palette) []PlateReport {
@@ -300,67 +424,103 @@ func reportsFromPlatePlans(plans []platePlan, palette Palette) []PlateReport {
 	return reports
 }
 
-func planPreservedMaterialSlots(colors []string, palette Palette) (materialPlan, error) {
+func planPreservedMaterialSlots(colors []string, palette Palette, replacements map[int]MaterialReplacement) (materialPlan, error) {
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
 	}
-	slotColors := make([]string, len(palette.Slots)+len(colors))
-	copy(slotColors, palette.outputColors())
-	mapping := make(map[int]int, len(colors))
-	sourceSlots := make(map[int][]int, len(colors))
+	parsedColors := make([]string, len(colors))
 	for index, value := range colors {
 		color, err := parseColor(value)
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("source T%d: %w", index+1, err)
 		}
-		target := len(palette.Slots) + index + 1
-		slotColors[target-1] = canonicalColor(color)
-		mapping[index+1] = target
-		sourceSlots[index+1] = []int{target}
+		parsedColors[index] = canonicalColor(color)
+	}
+
+	targetSources := make(map[int]int, len(colors))
+	baseTargets := make(map[int]int)
+	for material := 1; material <= len(colors); material++ {
+		replacement, replaced := replacements[material]
+		if !replaced {
+			targetSources[material] = material
+			continue
+		}
+		hasBase := replacement.BaseSlot != 0
+		hasSource := replacement.SourceMaterial != 0
+		if hasBase == hasSource {
+			return materialPlan{}, fmt.Errorf("source T%d color replacement must select one base or source target", material)
+		}
+		if hasBase {
+			if replacement.BaseSlot < 1 || replacement.BaseSlot > len(palette.Slots) {
+				return materialPlan{}, fmt.Errorf("source T%d color replacement references unknown base T%d", material, replacement.BaseSlot)
+			}
+			baseTargets[material] = replacement.BaseSlot
+			continue
+		}
+		if replacement.SourceMaterial < 1 || replacement.SourceMaterial > len(colors) {
+			return materialPlan{}, fmt.Errorf("source T%d color replacement references unknown source T%d", material, replacement.SourceMaterial)
+		}
+		targetSources[material] = replacement.SourceMaterial
+	}
+
+	kept := make(map[int]bool, len(targetSources))
+	for _, source := range targetSources {
+		kept[source] = true
+	}
+	preservedSources := make([]int, 0, len(kept))
+	for material := 1; material <= len(colors); material++ {
+		if kept[material] {
+			preservedSources = append(preservedSources, material)
+		}
+	}
+	slotColors := append([]string(nil), palette.outputColors()...)
+	outputSlot := make(map[int]int, len(preservedSources))
+	for _, material := range preservedSources {
+		outputSlot[material] = len(slotColors) + 1
+		slotColors = append(slotColors, parsedColors[material-1])
+	}
+	mapping := make(map[int]int, len(colors))
+	sourceSlots := make(map[int][]int, len(colors))
+	for material := 1; material <= len(colors); material++ {
+		target := baseTargets[material]
+		if target == 0 {
+			target = outputSlot[targetSources[material]]
+		}
+		mapping[material] = target
+		sourceSlots[material] = []int{target}
 	}
 	return materialPlan{
-		mode:            "material-slots",
-		physicalMapping: cloneMapping(mapping),
-		allMapping:      mapping,
-		sourceSlots:     sourceSlots,
-		slotColors:      slotColors,
-		preserveSlots:   true,
-		palette:         palette,
+		mode:             "material-slots",
+		physicalMapping:  cloneMapping(mapping),
+		allMapping:       mapping,
+		sourceSlots:      sourceSlots,
+		slotColors:       slotColors,
+		preserveSlots:    true,
+		palette:          palette,
+		preservedSources: preservedSources,
 	}, nil
 }
 
-func inspectMixModeColors(colors []string, usage materialUsage) (int, []MixModeColor, error) {
-	result := make([]MixModeColor, 0, len(colors))
+func inspectSourceColors(colors []string) (int, int, error) {
 	seen := make(map[string]bool, len(colors))
-	byColor := make(map[string]int, len(colors))
 	colorCount := 0
+	nonBaseCount := 0
 	for index, value := range colors {
 		color, err := parseColor(value)
 		if err != nil {
-			return 0, nil, fmt.Errorf("source T%d: %w", index+1, err)
+			return 0, 0, fmt.Errorf("source T%d: %w", index+1, err)
 		}
 		canonical := canonicalColor(color)
 		if seen[canonical] {
-			if resultIndex, exists := byColor[canonical]; exists {
-				result[resultIndex].MaterialIDs = append(result[resultIndex].MaterialIDs, index+1)
-				result[resultIndex].Used = result[resultIndex].Used || usage[index+1] > 0
-			}
 			continue
 		}
 		seen[canonical] = true
 		colorCount++
-		_, base := baseColorRole(color)
-		if base {
-			continue
+		if _, base := baseColorRole(color); !base {
+			nonBaseCount++
 		}
-		byColor[canonical] = len(result)
-		result = append(result, MixModeColor{
-			MaterialIDs: []int{index + 1},
-			Color:       canonical,
-			Used:        usage[index+1] > 0,
-		})
 	}
-	return colorCount, result, nil
+	return colorCount, nonBaseCount, nil
 }
 
 func materialMixModes(count int, defaultMode MixMode, overrides map[int]MixMode) ([]MixMode, error) {

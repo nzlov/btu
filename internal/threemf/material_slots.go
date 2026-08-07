@@ -207,7 +207,7 @@ func intAt(value any, index, fallback int) int {
 func mergePreservedMaterialSettings(target, source map[string]any, plan materialPlan) {
 	sourceSlotCount := len(stringSlice(source["filament_colour"]))
 	targetSlotCount := len(plan.slotColors)
-	baseSlotCount := targetSlotCount - sourceSlotCount
+	baseSlotCount := len(plan.palette.Slots)
 	for key, targetValue := range target {
 		if !isMaterialSlotSetting(key) {
 			continue
@@ -221,7 +221,7 @@ func mergePreservedMaterialSettings(target, source map[string]any, plan material
 					continue
 				}
 			}
-			if combined, ok := combinePreservedMaterialSetting(key, targetValue, sourceValue, baseSlotCount, sourceSlotCount); ok {
+			if combined, ok := combinePreservedMaterialSetting(key, targetValue, sourceValue, baseSlotCount, sourceSlotCount, plan.preservedSources); ok {
 				target[key] = combined
 				continue
 			}
@@ -240,7 +240,7 @@ func mergePreservedMaterialSettings(target, source map[string]any, plan material
 	target["filament_mixed_gradient"] = repeatedSlotValue("0", targetSlotCount)
 }
 
-func combinePreservedMaterialSetting(key string, targetValue, sourceValue any, baseSlotCount, sourceSlotCount int) (any, bool) {
+func combinePreservedMaterialSetting(key string, targetValue, sourceValue any, baseSlotCount, sourceSlotCount int, preservedSources []int) (any, bool) {
 	targetValues, targetIsSlice := anySlice(targetValue)
 	sourceValues, sourceIsSlice := anySlice(sourceValue)
 	if !sourceIsSlice {
@@ -250,17 +250,40 @@ func combinePreservedMaterialSetting(key string, targetValue, sourceValue any, b
 		return nil, false
 	}
 	if key == "flush_volumes_matrix" {
-		return combineFlushVolumeMatrices(targetValues, sourceValues, baseSlotCount, sourceSlotCount)
+		return combineFlushVolumeMatrices(targetValues, sourceValues, baseSlotCount, sourceSlotCount, preservedSources)
 	}
-	return append(append([]any(nil), targetValues...), sourceValues...), true
+	selected, ok := selectPreservedSourceValues(key, sourceValues, sourceSlotCount, preservedSources)
+	if !ok {
+		return nil, false
+	}
+	return append(append([]any(nil), targetValues...), selected...), true
 }
 
-func combineFlushVolumeMatrices(base, source []any, baseSlotCount, sourceSlotCount int) ([]any, bool) {
+func selectPreservedSourceValues(key string, source []any, sourceSlotCount int, preservedSources []int) ([]any, bool) {
+	width := 1
+	if key == "flush_volumes_vector" {
+		width = 2
+	}
+	if len(source) != sourceSlotCount*width {
+		return nil, false
+	}
+	selected := make([]any, 0, len(preservedSources)*width)
+	for _, material := range preservedSources {
+		if material < 1 || material > sourceSlotCount {
+			return nil, false
+		}
+		start := (material - 1) * width
+		selected = append(selected, source[start:start+width]...)
+	}
+	return selected, true
+}
+
+func combineFlushVolumeMatrices(base, source []any, baseSlotCount, sourceSlotCount int, preservedSources []int) ([]any, bool) {
 	if len(base) != baseSlotCount*baseSlotCount || len(source) != sourceSlotCount*sourceSlotCount {
 		return nil, false
 	}
 	cross := largestFlushVolume(base, source)
-	total := baseSlotCount + sourceSlotCount
+	total := baseSlotCount + len(preservedSources)
 	result := make([]any, total*total)
 	for row := 0; row < total; row++ {
 		for column := 0; column < total; column++ {
@@ -268,7 +291,12 @@ func combineFlushVolumeMatrices(base, source []any, baseSlotCount, sourceSlotCou
 			case row < baseSlotCount && column < baseSlotCount:
 				result[row*total+column] = base[row*baseSlotCount+column]
 			case row >= baseSlotCount && column >= baseSlotCount:
-				result[row*total+column] = source[(row-baseSlotCount)*sourceSlotCount+column-baseSlotCount]
+				sourceRow := preservedSources[row-baseSlotCount] - 1
+				sourceColumn := preservedSources[column-baseSlotCount] - 1
+				if sourceRow < 0 || sourceRow >= sourceSlotCount || sourceColumn < 0 || sourceColumn >= sourceSlotCount {
+					return nil, false
+				}
+				result[row*total+column] = source[sourceRow*sourceSlotCount+sourceColumn]
 			default:
 				result[row*total+column] = cross
 			}
