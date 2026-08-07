@@ -196,9 +196,10 @@ generate the colors with full-spectrum mixing. Answering yes opens a mix-mode
 list showing only colors that require synthesis, with their original swatch and
 hex value. Use Up/Down to choose a source color, Left/Right to change only that
 color's mode, and Enter to apply. Direct base colors are not listed.
-Answering no creates one ordinary material slot for every source material,
-keeps the source T1...Tn order and per-material settings, and creates no virtual
-mixtures. This non-mixed result is not limited to four logical material slots.
+Answering no keeps the requested T1-T4 base-color order, then appends one
+ordinary material slot for every source material in source T1...Tn order with
+its per-material settings, and creates no virtual mixtures. This non-mixed
+result is not limited to four logical material slots.
 Whenever full-spectrum conversion is enabled and neither layer-height flag was
 supplied, an interactive terminal then asks whether to subdivide mixed-color
 layers across the whole object and infill. Answering yes enables all three

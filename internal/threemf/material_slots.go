@@ -114,7 +114,7 @@ var u1CoupledMaterialSettingPrefixes = [...]string{
 
 func mergeMaterialSettings(target, source map[string]any, plan materialPlan) {
 	if plan.preserveSlots {
-		mergePreservedMaterialSettings(target, source, len(plan.slotColors))
+		mergePreservedMaterialSettings(target, source, plan)
 		return
 	}
 
@@ -204,32 +204,96 @@ func intAt(value any, index, fallback int) int {
 	return parsed
 }
 
-func mergePreservedMaterialSettings(target, source map[string]any, slotCount int) {
+func mergePreservedMaterialSettings(target, source map[string]any, plan materialPlan) {
+	sourceSlotCount := len(stringSlice(source["filament_colour"]))
+	targetSlotCount := len(plan.slotColors)
+	baseSlotCount := targetSlotCount - sourceSlotCount
 	for key, targetValue := range target {
 		if !isMaterialSlotSetting(key) {
 			continue
 		}
 		if sourceValue, exists := source[key]; exists && isSourceMaterialSetting(key) {
-			target[key] = sourceValue
-			continue
+			if key != "flush_volumes_matrix" && key != "flush_volumes_vector" {
+				var supported bool
+				sourceValue, supported = sourceMaterialSettingValue(source, key, sourceSlotCount)
+				if !supported {
+					target[key] = resizeFourSlotValue(targetValue, targetSlotCount)
+					continue
+				}
+			}
+			if combined, ok := combinePreservedMaterialSetting(key, targetValue, sourceValue, baseSlotCount, sourceSlotCount); ok {
+				target[key] = combined
+				continue
+			}
 		}
-		target[key] = resizeFourSlotValue(targetValue, slotCount)
-	}
-	for key, value := range source {
-		if isSourceMaterialSetting(key) {
-			target[key] = value
-		}
+		target[key] = resizeFourSlotValue(targetValue, targetSlotCount)
 	}
 
-	target["filament_is_mixed"] = repeatedSlotValue("0", slotCount)
+	target["filament_is_mixed"] = repeatedSlotValue("0", targetSlotCount)
 	for _, key := range []string{
 		"filament_mixed_components",
 		"filament_mixed_gradient_range",
 		"filament_mixed_sublayer_ratios",
 	} {
-		target[key] = repeatedSlotValue("", slotCount)
+		target[key] = repeatedSlotValue("", targetSlotCount)
 	}
-	target["filament_mixed_gradient"] = repeatedSlotValue("0", slotCount)
+	target["filament_mixed_gradient"] = repeatedSlotValue("0", targetSlotCount)
+}
+
+func combinePreservedMaterialSetting(key string, targetValue, sourceValue any, baseSlotCount, sourceSlotCount int) (any, bool) {
+	targetValues, targetIsSlice := anySlice(targetValue)
+	sourceValues, sourceIsSlice := anySlice(sourceValue)
+	if !sourceIsSlice {
+		return sourceValue, true
+	}
+	if !targetIsSlice {
+		return nil, false
+	}
+	if key == "flush_volumes_matrix" {
+		return combineFlushVolumeMatrices(targetValues, sourceValues, baseSlotCount, sourceSlotCount)
+	}
+	return append(append([]any(nil), targetValues...), sourceValues...), true
+}
+
+func combineFlushVolumeMatrices(base, source []any, baseSlotCount, sourceSlotCount int) ([]any, bool) {
+	if len(base) != baseSlotCount*baseSlotCount || len(source) != sourceSlotCount*sourceSlotCount {
+		return nil, false
+	}
+	cross := largestFlushVolume(base, source)
+	total := baseSlotCount + sourceSlotCount
+	result := make([]any, total*total)
+	for row := 0; row < total; row++ {
+		for column := 0; column < total; column++ {
+			switch {
+			case row < baseSlotCount && column < baseSlotCount:
+				result[row*total+column] = base[row*baseSlotCount+column]
+			case row >= baseSlotCount && column >= baseSlotCount:
+				result[row*total+column] = source[(row-baseSlotCount)*sourceSlotCount+column-baseSlotCount]
+			default:
+				result[row*total+column] = cross
+			}
+		}
+	}
+	return result, true
+}
+
+func largestFlushVolume(groups ...[]any) any {
+	best := any("0")
+	bestValue := 0.0
+	for _, values := range groups {
+		for _, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(text, 64)
+			if err == nil && parsed > bestValue {
+				best = value
+				bestValue = parsed
+			}
+		}
+	}
+	return best
 }
 
 func remapMaterialSettingValue(sourceValue, targetValue any, sourceSlotCount, targetSlotCount int, sourceSlots map[int][]int) (any, bool) {

@@ -498,6 +498,8 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 		"filament_type":                  types,
 		"filament_settings_id":           settingsIDs,
 		"filament_flow_ratio":            flowRatios,
+		"filament_self_index":            []string{"1", "1", "2", "2", "3", "3", "4", "4", "5", "5", "6", "6"},
+		"filament_extruder_variant":      []string{"Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow"},
 		"filament_max_volumetric_speed":  repeatedSlotValue("99", 6),
 		"filament_is_mixed":              []string{"0", "0", "0", "0", "0", "0"},
 		"filament_mixed_components":      []string{"", "", "", "", "", ""},
@@ -515,62 +517,81 @@ func TestConvertPreservesAllMaterialSlotsWithoutMixing(t *testing.T) {
 		modelSettingsName: `<config><metadata key="extruder" value="1"/><metadata key="extruder" value="6"/></config>`,
 	})
 
+	palette, err := ParsePalette("bmcy")
+	if err != nil {
+		t.Fatal(err)
+	}
 	report, err := Convert(context.Background(), Request{
 		Source:                sourcePath,
 		Output:                outputPath,
 		Nozzle:                "0.2",
+		Palette:               palette,
 		PreserveMaterialSlots: true,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Mode != "material-slots" || report.VirtualMixes != 0 || report.Colors != strings.Join(colors, ",") {
+	wantColors := append(palette.outputColors(), colors...)
+	if report.Mode != "material-slots" || report.VirtualMixes != 0 || report.Colors != strings.Join(wantColors, ",") {
 		t.Fatalf("unexpected report: %+v", report)
 	}
-	wantMapping := map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+	wantMapping := map[int]int{1: 5, 2: 6, 3: 7, 4: 8, 5: 9, 6: 10}
 	if !reflect.DeepEqual(report.PhysicalMapping, wantMapping) {
 		t.Fatalf("mapping = %v, want %v", report.PhysicalMapping, wantMapping)
 	}
 
 	settings := readTestJSONMember(t, outputPath, projectSettingsName)
-	for key, want := range map[string][]string{
-		"filament_colour":      colors,
+	if got := stringSlice(settings["filament_colour"]); !reflect.DeepEqual(got, wantColors) {
+		t.Fatalf("filament_colour = %v, want %v", got, wantColors)
+	}
+	for key, wantSuffix := range map[string][]string{
 		"filament_type":        types,
 		"filament_settings_id": settingsIDs,
 		"filament_flow_ratio":  flowRatios,
-		"nozzle_temperature":   nozzleTemperatures,
+		"nozzle_temperature":   {"255", "220", "220", "220", "220", "220"},
 	} {
-		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s = %v, want %v", key, got, want)
+		got := stringSlice(settings[key])
+		if len(got) < 4 || !reflect.DeepEqual(got[4:], wantSuffix) {
+			t.Fatalf("%s = %v, want source suffix %v", key, got, wantSuffix)
 		}
 	}
 	if got := stringSlice(settings["nozzle_diameter"]); !reflect.DeepEqual(got, []string{"0.2", "0.2", "0.2", "0.2"}) {
 		t.Fatalf("nozzle_diameter = %v, want four U1 heads", got)
 	}
 	for key, want := range map[string][]string{
-		"filament_max_volumetric_speed": repeatedSlotValue("1.6", 6),
-		"pressure_advance":              repeatedSlotValue("0.02", 6),
-		"flush_volumes_matrix":          flushMatrix,
-		"flush_volumes_vector":          flushVector,
+		"filament_max_volumetric_speed": repeatedSlotValue("1.6", 10),
+		"pressure_advance":              repeatedSlotValue("0.02", 10),
 	} {
 		if got := stringSlice(settings[key]); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s = %v, want %v", key, got, want)
 		}
 	}
-	if got := stringSlice(settings["filament_unloading_speed"]); len(got) != len(colors) {
-		t.Fatalf("filament_unloading_speed has %d slots, want %d", len(got), len(colors))
+	if got := stringSlice(settings["flush_volumes_vector"]); len(got) != 20 || !reflect.DeepEqual(got[8:], flushVector) {
+		t.Fatalf("flush_volumes_vector = %v, want 8 base plus %v", got, flushVector)
+	}
+	if got := stringSlice(settings["flush_volumes_matrix"]); len(got) != 100 {
+		t.Fatalf("flush_volumes_matrix has %d entries, want 100", len(got))
+	} else {
+		for row := 0; row < 6; row++ {
+			if !reflect.DeepEqual(got[(row+4)*10+4:(row+5)*10], flushMatrix[row*6:(row+1)*6]) {
+				t.Fatalf("source flush matrix row %d was not preserved: %v", row, got)
+			}
+		}
+	}
+	if got := stringSlice(settings["filament_unloading_speed"]); len(got) != len(wantColors) {
+		t.Fatalf("filament_unloading_speed has %d slots, want %d", len(got), len(wantColors))
 	}
 	if settings["mixed_filament_definitions"] != "" || settings["dithering_local_z_mode"] != "0" {
 		t.Fatalf("mixing remained enabled: %v", settings)
 	}
-	if got := stringSlice(settings["filament_is_mixed"]); !reflect.DeepEqual(got, []string{"0", "0", "0", "0", "0", "0"}) {
+	if got := stringSlice(settings["filament_is_mixed"]); !reflect.DeepEqual(got, repeatedSlotValue("0", 10)) {
 		t.Fatalf("filament_is_mixed = %v", got)
 	}
-	if got := stringSlice(settings["filament_mixed_gradient"]); !reflect.DeepEqual(got, []string{"0", "0", "0", "0", "0", "0"}) {
+	if got := stringSlice(settings["filament_mixed_gradient"]); !reflect.DeepEqual(got, repeatedSlotValue("0", 10)) {
 		t.Fatalf("filament_mixed_gradient = %v", got)
 	}
 	modelSettings := readTestMember(t, outputPath, modelSettingsName)
-	for _, reference := range []string{`value="1"`, `value="6"`} {
+	for _, reference := range []string{`value="5"`, `value="10"`} {
 		if !strings.Contains(modelSettings, reference) {
 			t.Fatalf("model settings missing %s: %s", reference, modelSettings)
 		}

@@ -452,7 +452,7 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	stdout, stderr := tempOutputs(t)
 	calls := 0
 	status := runWithPrompts(
-		[]string{"-o", "output.3mf", "source.3mf"},
+		[]string{"-o", "output.3mf", "-c", "bmcy", "source.3mf"},
 		stdout,
 		stderr,
 		func(_ context.Context, request threemf.Request, _ threemf.ProgressFunc) (threemf.Report, error) {
@@ -466,7 +466,14 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 			if request.FullSpectrum || !request.PreserveMaterialSlots {
 				t.Fatalf("retry request = %+v", request)
 			}
-			return threemf.Report{Mode: "material-slots", Output: request.Output, Colors: "#FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42"}, nil
+			wantPalette, err := threemf.ParsePalette("bmcy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.Palette != wantPalette {
+				t.Fatalf("retry palette = %v, want %v", request.Palette, wantPalette)
+			}
+			return threemf.Report{Mode: "material-slots", Output: request.Output, Colors: "#000000,#FF0000,#0000FF,#FFFF00,#FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42"}, nil
 		},
 		func(context.Context, *os.File, string) (bool, error) { return false, nil },
 		unexpectedMixModeSelection,
@@ -474,7 +481,7 @@ func TestRejectingAutomaticMixingPreservesAllMaterialSlots(t *testing.T) {
 	if status != 0 || calls != 2 {
 		t.Fatalf("status = %d, calls = %d, stderr = %s", status, calls, readOutput(t, stderr))
 	}
-	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: #FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
+	if got := readOutput(t, stdout); !strings.Contains(got, "Required U1 colors: #000000,#FF0000,#0000FF,#FFFF00,#FCE300,#FB0207,#161616,#FFFFFF,#5E43B7,#00AE42") {
 		t.Fatalf("stdout = %q", got)
 	}
 }

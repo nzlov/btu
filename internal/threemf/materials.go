@@ -94,7 +94,7 @@ func planMaterials(source, template map[string]any, palette Palette, options mat
 			return materialPlan{}, err
 		}
 		if options.preserveSlots {
-			return planPreservedMaterialSlots(colors)
+			return planPreservedMaterialSlots(colors, palette)
 		}
 		if len(mixColors) > 0 && !options.fullSpectrum {
 			return materialPlan{}, &FullSpectrumRequiredError{
@@ -300,11 +300,12 @@ func reportsFromPlatePlans(plans []platePlan, palette Palette) []PlateReport {
 	return reports
 }
 
-func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
+func planPreservedMaterialSlots(colors []string, palette Palette) (materialPlan, error) {
 	if len(colors) == 0 {
 		return materialPlan{}, fmt.Errorf("source has no filament colors")
 	}
-	slotColors := make([]string, len(colors))
+	slotColors := make([]string, len(palette.Slots)+len(colors))
+	copy(slotColors, palette.outputColors())
 	mapping := make(map[int]int, len(colors))
 	sourceSlots := make(map[int][]int, len(colors))
 	for index, value := range colors {
@@ -312,9 +313,10 @@ func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
 		if err != nil {
 			return materialPlan{}, fmt.Errorf("source T%d: %w", index+1, err)
 		}
-		slotColors[index] = canonicalColor(color)
-		mapping[index+1] = index + 1
-		sourceSlots[index+1] = []int{index + 1}
+		target := len(palette.Slots) + index + 1
+		slotColors[target-1] = canonicalColor(color)
+		mapping[index+1] = target
+		sourceSlots[index+1] = []int{target}
 	}
 	return materialPlan{
 		mode:            "material-slots",
@@ -323,6 +325,7 @@ func planPreservedMaterialSlots(colors []string) (materialPlan, error) {
 		sourceSlots:     sourceSlots,
 		slotColors:      slotColors,
 		preserveSlots:   true,
+		palette:         palette,
 	}, nil
 }
 

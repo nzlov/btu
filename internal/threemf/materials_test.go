@@ -369,13 +369,37 @@ func TestPlanPreservesEverySourceMaterialSlotWithoutMixing(t *testing.T) {
 	if plan.mode != "material-slots" || plan.virtualMixes != 0 || plan.definitions != "" {
 		t.Fatalf("unexpected mapped plan: %+v", plan)
 	}
-	wantMapping := map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+	wantMapping := map[int]int{1: 5, 2: 6, 3: 7, 4: 8, 5: 9, 6: 10}
 	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
 		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
 	}
-	wantColors := []string{"#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42"}
+	wantColors := append(DefaultPalette().outputColors(), "#FCE300", "#FB0207", "#161616", "#FFFFFF", "#5E43B7", "#00AE42")
 	if !reflect.DeepEqual(plan.outputColors(), wantColors) {
 		t.Fatalf("colors = %v, want %v", plan.outputColors(), wantColors)
+	}
+}
+
+func TestPlanPreservedSlotsStartWithRequestedColorOrder(t *testing.T) {
+	source := map[string]any{
+		"filament_colour": []string{"#5E43B7", "#00AE42"},
+		"filament_type":   []string{"PLA", "PLA"},
+	}
+	palette, err := ParsePalette("bmcy")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := planMaterials(source, testTemplate(), palette, materialPlanOptions{preserveSlots: true}, projectMaterialUsage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantColors := append(palette.outputColors(), "#5E43B7", "#00AE42")
+	if got := plan.outputColors(); !reflect.DeepEqual(got, wantColors) {
+		t.Fatalf("colors = %v, want %v", got, wantColors)
+	}
+	wantMapping := map[int]int{1: 5, 2: 6}
+	if !reflect.DeepEqual(plan.allMapping, wantMapping) {
+		t.Fatalf("mapping = %v, want %v", plan.allMapping, wantMapping)
 	}
 }
 
