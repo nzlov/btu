@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nzlov/btu/internal/i18n"
 )
 
 func TestRunFallsBackToPlainProgressForFile(t *testing.T) {
@@ -14,7 +16,7 @@ func TestRunFallsBackToPlainProgressForFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := Run(context.Background(), output, func(report func(Progress)) (int, error) {
+	value, err := Run(context.Background(), output, i18n.EnglishLocalizer(), func(report func(Progress)) (int, error) {
 		report(Progress{Current: 1, Total: 2, Stage: "Analyze", Detail: "a.model", ItemCurrent: 1, ItemTotal: 2})
 		report(Progress{Current: 1, Total: 2, Stage: "Analyze", Detail: "b.model", ItemCurrent: 2, ItemTotal: 2})
 		report(Progress{Current: 2, Total: 2, Stage: "Complete"})
@@ -41,7 +43,8 @@ func TestRunFallsBackToPlainProgressForFile(t *testing.T) {
 
 func TestProgressModelShowsExactItemProgressWithinTerminalWidth(t *testing.T) {
 	model := model[int]{
-		width: 48,
+		localizer: i18n.EnglishLocalizer(),
+		width:     48,
 		progress: Progress{
 			Current: 3, Total: 6, Stage: "Rewrite 3MF package",
 			ItemCurrent: 7, ItemTotal: 10, Detail: "Metadata/very-long-model-member-name.model",
@@ -92,7 +95,7 @@ func TestConfirmRejectsNonInteractiveFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Confirm(context.Background(), input, output, "Enable?")
+	_, err = Confirm(context.Background(), input, output, i18n.EnglishLocalizer(), "Enable?")
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("error = %v", err)
 	}

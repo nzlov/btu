@@ -71,7 +71,7 @@ func TestConvertReplaceOverwritesExistingOutput(t *testing.T) {
 	}
 	reader.Close()
 	lastStage := -1
-	completedItems := map[string]bool{}
+	completedItems := map[ProgressStage]bool{}
 	for _, event := range progressEvents {
 		if event.Current < lastStage {
 			t.Fatalf("progress moved backwards: %+v", progressEvents)
@@ -84,7 +84,7 @@ func TestConvertReplaceOverwritesExistingOutput(t *testing.T) {
 	if len(progressEvents) == 0 || progressEvents[0].Current != 0 || progressEvents[len(progressEvents)-1].Current != 6 {
 		t.Fatalf("progress endpoints = %+v", progressEvents)
 	}
-	for _, stage := range []string{"Analyze materials", "Rewrite 3MF package", "Verify output"} {
+	for _, stage := range []ProgressStage{ProgressStageAnalyzeMaterials, ProgressStageRewritePackage, ProgressStageVerifyOutput} {
 		if !completedItems[stage] {
 			t.Fatalf("stage %q did not report exact completion: %+v", stage, progressEvents)
 		}
@@ -127,7 +127,7 @@ func TestPreviewColorPlanReturnsEditableBaseOnlySequence(t *testing.T) {
 	}
 	analysisComplete := false
 	for _, event := range progressEvents {
-		if event.Stage == "Analyze color plan" && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
+		if event.Stage == ProgressStageAnalyzeColorPlan && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
 			analysisComplete = true
 		}
 	}
@@ -161,7 +161,7 @@ func TestPreviewColorPlanCompletesProgressWhenReviewIsRequired(t *testing.T) {
 	}
 	analysisComplete := false
 	for _, event := range progressEvents {
-		if event.Stage == "Analyze color plan" && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
+		if event.Stage == ProgressStageAnalyzeColorPlan && event.ItemTotal > 0 && event.ItemCurrent == event.ItemTotal {
 			analysisComplete = true
 		}
 	}

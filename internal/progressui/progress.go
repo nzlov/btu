@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/nzlov/btu/internal/i18n"
 )
 
 type Progress struct {
@@ -27,12 +30,13 @@ type resultMsg[T any] struct {
 }
 
 type model[T any] struct {
-	ctx      context.Context
-	events   <-chan any
-	progress Progress
-	result   resultMsg[T]
-	width    int
-	done     bool
+	ctx       context.Context
+	events    <-chan any
+	progress  Progress
+	result    resultMsg[T]
+	localizer i18n.Localizer
+	width     int
+	done      bool
 }
 
 func waitForEvent[T any](ctx context.Context, events <-chan any) tea.Cmd {
@@ -78,12 +82,12 @@ func (m model[T]) View() string {
 	}
 	p := m.progress
 	if p.Total <= 0 {
-		return "Preparing...\n"
+		return m.localizer.Text(i18n.ProgressPreparing)
 	}
 	current := max(0, min(p.Current, p.Total))
 	barWidth := 28
 	if m.width > 0 {
-		stageWidth := len([]rune(p.Stage))
+		stageWidth := ansi.StringWidth(p.Stage)
 		barWidth = max(8, min(barWidth, m.width-stageWidth-9))
 	}
 	filled := current * barWidth / p.Total
@@ -105,14 +109,13 @@ func (m model[T]) View() string {
 }
 
 func truncateProgressLine(value string, width int) string {
-	characters := []rune(value)
-	if width <= 3 || len(characters) <= width {
+	if width <= 3 || ansi.StringWidth(value) <= width {
 		return value
 	}
-	return string(characters[:width-3]) + "..."
+	return ansi.Truncate(value, width, "...")
 }
 
-func Run[T any](ctx context.Context, output *os.File, job Job[T]) (T, error) {
+func Run[T any](ctx context.Context, output *os.File, localizer i18n.Localizer, job Job[T]) (T, error) {
 	if !isTerminal(output) {
 		return runPlain(output, job)
 	}
@@ -125,7 +128,7 @@ func Run[T any](ctx context.Context, output *os.File, job Job[T]) (T, error) {
 		events <- resultMsg[T]{value: value, err: err}
 	}()
 
-	initial := model[T]{ctx: ctx, events: events}
+	initial := model[T]{ctx: ctx, events: events, localizer: localizer}
 	program := tea.NewProgram(initial, tea.WithInput(nil), tea.WithOutput(output))
 	final, err := program.Run()
 	if err != nil {

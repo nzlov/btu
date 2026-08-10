@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nzlov/btu/internal/i18n"
 	"github.com/nzlov/btu/internal/progressui"
 	"github.com/nzlov/btu/internal/threemf"
 )
 
 func TestHelpReturnsSuccess(t *testing.T) {
+	t.Setenv("LANG", "en_US.UTF-8")
 	stdout, stderr := tempOutputs(t)
 	if status := Run([]string{"--help"}, stdout, stderr); status != 0 {
 		t.Fatalf("status = %d, want 0", status)
@@ -32,6 +34,89 @@ func TestHelpReturnsSuccess(t *testing.T) {
 		if !strings.Contains(help, text) {
 			t.Fatalf("help is missing %q:\n%s", text, help)
 		}
+	}
+}
+
+func TestChineseHelpFollowsLANG(t *testing.T) {
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	stdout, stderr := tempOutputs(t)
+	if status := Run([]string{"--help"}, stdout, stderr); status != 0 {
+		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
+	}
+	help := readOutput(t, stdout)
+	for _, message := range []i18n.Message{i18n.AppUsage, i18n.FlagOutputUsage, i18n.FlagMixModeUsage, i18n.HelpShow} {
+		if text := strings.ReplaceAll(i18n.FromLANG("zh_CN.UTF-8").Text(message), "`", ""); !strings.Contains(help, text) {
+			t.Fatalf("help is missing %q:\n%s", text, help)
+		}
+	}
+	if strings.Contains(help, "GLOBAL OPTIONS") || strings.Contains(help, "show help") {
+		t.Fatalf("Chinese help contains English UI text:\n%s", help)
+	}
+}
+
+func TestChineseProgressAndResultFollowLANG(t *testing.T) {
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	stdout, stderr := tempOutputs(t)
+	status := run([]string{"source.3mf"}, stdout, stderr, func(_ context.Context, request threemf.Request, progress threemf.ProgressFunc) (threemf.Report, error) {
+		progress(threemf.Progress{Current: 0, Total: 3, Stage: threemf.ProgressStageOpenSource, Detail: threemf.ProgressDetail{Value: request.Source}})
+		progress(threemf.Progress{Current: 1, Total: 3, Stage: threemf.ProgressStageAnalyzeMaterials, Detail: threemf.ProgressDetail{Kind: threemf.ProgressDetailMaterialMapping}, ItemCurrent: 1, ItemTotal: 1})
+		progress(threemf.Progress{Current: 2, Total: 3, Stage: threemf.ProgressStageEncodeProjectSettings, DetailCount: 2})
+		progress(threemf.Progress{Current: 3, Total: 3, Stage: threemf.ProgressStageComplete, Detail: threemf.ProgressDetail{Value: request.Output}})
+		return threemf.Report{
+			Mode: "full-spectrum", Output: request.Output, Colors: "cmyg", VirtualMixes: 2,
+			Plates: []threemf.PlateReport{{Number: 2, Name: "body", Neutral: threemf.ColorBlack, Colors: "cmyb"}},
+		}, nil
+	})
+	if status != 0 {
+		t.Fatalf("status = %d, stderr = %s", status, readOutput(t, stderr))
+	}
+	progress := readOutput(t, stderr)
+	for _, message := range []i18n.Message{i18n.ProgressOpenSource, i18n.ProgressAnalyzeMaterials, i18n.ProgressMaterialMapping, i18n.ProgressEncodeProjectSettings, i18n.ProgressComplete} {
+		if text := i18n.FromLANG("zh_CN.UTF-8").Text(message); !strings.Contains(progress, text) {
+			t.Fatalf("progress is missing %q: %s", text, progress)
+		}
+	}
+	result := readOutput(t, stdout)
+	for _, want := range []string{"已转换 source.3mf", "2 个混合材料", "所需 U1 色序：cmyg", "将 T4 从灰色更换为黑色", "打印盘 2 - body"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("result is missing %q:\n%s", want, result)
+		}
+	}
+}
+
+func TestChineseValidationFollowsLANG(t *testing.T) {
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	stdout, stderr := tempOutputs(t)
+	status := run([]string{"--mix-mode", "blend", "source.3mf"}, stdout, stderr, func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error) {
+		t.Fatal("conversion should not run")
+		return threemf.Report{}, nil
+	})
+	if status != 2 {
+		t.Fatalf("status = %d", status)
+	}
+	got := readOutput(t, stderr)
+	for _, message := range []i18n.Message{i18n.ErrorIncorrectUsage, i18n.ErrorInvalidMixMode} {
+		text := strings.Split(i18n.FromLANG("zh_CN.UTF-8").Text(message), "%")[0]
+		if !strings.Contains(got, text) {
+			t.Fatalf("stderr is missing %q: %s", text, got)
+		}
+	}
+	if strings.Contains(got, "invalid value") || strings.Contains(got, "for flag") {
+		t.Fatalf("stderr contains untranslated validation wrapper: %s", got)
+	}
+}
+
+func TestChineseConversionErrorHasLocalizedContext(t *testing.T) {
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	stdout, stderr := tempOutputs(t)
+	status := run([]string{"source.3mf"}, stdout, stderr, func(context.Context, threemf.Request, threemf.ProgressFunc) (threemf.Report, error) {
+		return threemf.Report{}, errors.New("low-level detail")
+	})
+	if status != 1 {
+		t.Fatalf("status = %d", status)
+	}
+	if got := readOutput(t, stderr); !strings.Contains(got, "转换失败：low-level detail") {
+		t.Fatalf("stderr = %q", got)
 	}
 }
 
@@ -182,8 +267,8 @@ func TestNonFullSpectrumConversionReviewsBaseColorPlan(t *testing.T) {
 		},
 		func(_ context.Context, _ threemf.Request, progress threemf.ProgressFunc) (threemf.ColorSequence, error) {
 			previews++
-			progress(threemf.Progress{Current: 0, Total: 3, Stage: "Open source"})
-			progress(threemf.Progress{Current: 3, Total: 3, Stage: "Color plan ready"})
+			progress(threemf.Progress{Current: 0, Total: 3, Stage: threemf.ProgressStageOpenSource})
+			progress(threemf.Progress{Current: 3, Total: 3, Stage: threemf.ProgressStageColorPlanReady})
 			return sequence, nil
 		},
 	)

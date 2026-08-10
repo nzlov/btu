@@ -66,20 +66,51 @@ func (err *OutputExistsError) Error() string {
 	return fmt.Sprintf("output already exists: %s", err.Path)
 }
 
+type ProgressStage uint8
+
+const (
+	ProgressStageOpenSource ProgressStage = iota + 1
+	ProgressStageAnalyzeColorPlan
+	ProgressStageBuildColorEditor
+	ProgressStageColorPlanReady
+	ProgressStageAnalyzeMaterials
+	ProgressStageEncodeProjectSettings
+	ProgressStageRewritePackage
+	ProgressStageVerifyOutput
+	ProgressStagePublishOutput
+	ProgressStageComplete
+)
+
+type ProgressDetailKind uint8
+
+const (
+	ProgressDetailValue ProgressDetailKind = iota
+	ProgressDetailU1Baseline
+	ProgressDetailMaterialMapping
+	ProgressDetailPrepareOutputArchive
+	ProgressDetailOpenOutputArchive
+)
+
+type ProgressDetail struct {
+	Kind  ProgressDetailKind
+	Value string
+}
+
 type Progress struct {
 	Current     int
 	Total       int
-	Stage       string
-	Detail      string
+	Stage       ProgressStage
+	Detail      ProgressDetail
+	DetailCount int
 	ItemCurrent int
 	ItemTotal   int
 }
 
 type ProgressFunc func(Progress)
 
-type itemProgressFunc func(current, total int, detail string)
+type itemProgressFunc func(current, total int, detail ProgressDetail)
 
-func reportItemProgress(progress itemProgressFunc, current, total int, detail string) {
+func reportItemProgress(progress itemProgressFunc, current, total int, detail ProgressDetail) {
 	if progress != nil {
 		progress(current, total, detail)
 	}
@@ -117,7 +148,7 @@ func PreviewColorPlan(ctx context.Context, request Request, progress ProgressFun
 	if err != nil {
 		return ColorSequence{}, err
 	}
-	progress(Progress{Current: 0, Total: 3, Stage: "Open source", Detail: request.Source})
+	progress(Progress{Current: 0, Total: 3, Stage: ProgressStageOpenSource, Detail: ProgressDetail{Value: request.Source}})
 	source, err := openArchive(request.Source)
 	if err != nil {
 		return ColorSequence{}, fmt.Errorf("open source: %w", err)
@@ -125,28 +156,28 @@ func PreviewColorPlan(ctx context.Context, request Request, progress ProgressFun
 	defer source.reader.Close()
 
 	analysisTotal := analyzeConversionWorkTotal(source)
-	progress(Progress{Current: 1, Total: 3, Stage: "Analyze color plan", ItemTotal: analysisTotal})
-	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail string) {
+	progress(Progress{Current: 1, Total: 3, Stage: ProgressStageAnalyzeColorPlan, ItemTotal: analysisTotal})
+	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail ProgressDetail) {
 		progress(Progress{
-			Current: 1, Total: 3, Stage: "Analyze color plan", Detail: detail,
+			Current: 1, Total: 3, Stage: ProgressStageAnalyzeColorPlan, Detail: detail,
 			ItemCurrent: current, ItemTotal: total,
 		})
 	})
 	if err != nil {
 		var required *FullSpectrumRequiredError
 		if errors.As(err, &required) {
-			progress(Progress{Current: 2, Total: 3, Stage: "Build color editor"})
-			progress(Progress{Current: 3, Total: 3, Stage: "Color plan ready", Detail: fmt.Sprintf("%d source colors", len(required.Sequence.Source))})
+			progress(Progress{Current: 2, Total: 3, Stage: ProgressStageBuildColorEditor})
+			progress(Progress{Current: 3, Total: 3, Stage: ProgressStageColorPlanReady, DetailCount: len(required.Sequence.Source)})
 		}
 		return ColorSequence{}, err
 	}
-	progress(Progress{Current: 2, Total: 3, Stage: "Build color editor"})
+	progress(Progress{Current: 2, Total: 3, Stage: ProgressStageBuildColorEditor})
 	colors := stringSlice(analysis.sourceSettings["filament_colour"])
 	sequence, err := makeColorSequence(colors, analysis.usage.Total, analysis.plan)
 	if err != nil {
 		return ColorSequence{}, err
 	}
-	progress(Progress{Current: 3, Total: 3, Stage: "Color plan ready", Detail: fmt.Sprintf("%d source colors", len(sequence.Source))})
+	progress(Progress{Current: 3, Total: 3, Stage: ProgressStageColorPlanReady, DetailCount: len(sequence.Source)})
 	return sequence, nil
 }
 
@@ -178,7 +209,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		return Report{}, fmt.Errorf("check output: %w", err)
 	}
 
-	progress(Progress{Current: 0, Total: 6, Stage: "Open source", Detail: request.Source})
+	progress(Progress{Current: 0, Total: 6, Stage: ProgressStageOpenSource, Detail: ProgressDetail{Value: request.Source}})
 	source, err := openArchive(request.Source)
 	if err != nil {
 		return Report{}, fmt.Errorf("open source: %w", err)
@@ -186,10 +217,10 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	defer source.reader.Close()
 
 	analysisTotal := analyzeConversionWorkTotal(source)
-	progress(Progress{Current: 1, Total: 6, Stage: "Analyze materials", ItemTotal: analysisTotal})
-	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail string) {
+	progress(Progress{Current: 1, Total: 6, Stage: ProgressStageAnalyzeMaterials, ItemTotal: analysisTotal})
+	analysis, err := analyzeConversion(ctx, source, request, palette, func(current, total int, detail ProgressDetail) {
 		progress(Progress{
-			Current: 1, Total: 6, Stage: "Analyze materials", Detail: detail,
+			Current: 1, Total: 6, Stage: ProgressStageAnalyzeMaterials, Detail: detail,
 			ItemCurrent: current, ItemTotal: total,
 		})
 	})
@@ -200,7 +231,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	baseline := analysis.baseline
 	plan := analysis.plan
 
-	progress(Progress{Current: 2, Total: 6, Stage: "Encode project settings", Detail: fmt.Sprintf("%d virtual materials", plan.virtualMixes)})
+	progress(Progress{Current: 2, Total: 6, Stage: ProgressStageEncodeProjectSettings, DetailCount: plan.virtualMixes})
 	mergedSettings, hasProjectProcessSettings := mergeProjectSettings(sourceSettings, baseline.projectSettings, plan, request.FullSpectrum, request.LocalZ)
 	var processData []byte
 	if hasProjectProcessSettings {
@@ -226,7 +257,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 	}
 
 	writeTotal := writeArchiveWorkTotal(source, len(processData) > 0)
-	progress(Progress{Current: 3, Total: 6, Stage: "Rewrite 3MF package", ItemTotal: writeTotal})
+	progress(Progress{Current: 3, Total: 6, Stage: ProgressStageRewritePackage, ItemTotal: writeTotal})
 	temporary, err := os.CreateTemp(filepath.Dir(request.Output), "."+filepath.Base(request.Output)+".*.tmp")
 	if err != nil {
 		return Report{}, fmt.Errorf("create temporary output: %w", err)
@@ -240,9 +271,9 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		}
 	}()
 
-	if err := writeArchive(ctx, temporary, source, baseline, projectData, processData, modelSettings, plan, func(current, total int, detail string) {
+	if err := writeArchive(ctx, temporary, source, baseline, projectData, processData, modelSettings, plan, func(current, total int, detail ProgressDetail) {
 		progress(Progress{
-			Current: 3, Total: 6, Stage: "Rewrite 3MF package", Detail: detail,
+			Current: 3, Total: 6, Stage: ProgressStageRewritePackage, Detail: detail,
 			ItemCurrent: current, ItemTotal: total,
 		})
 	}); err != nil {
@@ -252,16 +283,16 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		return Report{}, fmt.Errorf("close temporary output: %w", err)
 	}
 
-	progress(Progress{Current: 4, Total: 6, Stage: "Verify output"})
-	if err := verifyArchive(temporaryName, plan, hasProjectProcessSettings, func(current, total int, detail string) {
+	progress(Progress{Current: 4, Total: 6, Stage: ProgressStageVerifyOutput})
+	if err := verifyArchive(temporaryName, plan, hasProjectProcessSettings, func(current, total int, detail ProgressDetail) {
 		progress(Progress{
-			Current: 4, Total: 6, Stage: "Verify output", Detail: detail,
+			Current: 4, Total: 6, Stage: ProgressStageVerifyOutput, Detail: detail,
 			ItemCurrent: current, ItemTotal: total,
 		})
 	}); err != nil {
 		return Report{}, err
 	}
-	progress(Progress{Current: 5, Total: 6, Stage: "Publish output", Detail: request.Output})
+	progress(Progress{Current: 5, Total: 6, Stage: ProgressStagePublishOutput, Detail: ProgressDetail{Value: request.Output}})
 	if err := os.Chmod(temporaryName, 0o644); err != nil {
 		return Report{}, fmt.Errorf("set output permissions: %w", err)
 	}
@@ -269,7 +300,7 @@ func Convert(ctx context.Context, request Request, progress ProgressFunc) (Repor
 		return Report{}, fmt.Errorf("publish output: %w", err)
 	}
 	committed = true
-	progress(Progress{Current: 6, Total: 6, Stage: "Complete", Detail: request.Output})
+	progress(Progress{Current: 6, Total: 6, Stage: ProgressStageComplete, Detail: ProgressDetail{Value: request.Output}})
 
 	return Report{
 		Mode:            plan.mode,
@@ -296,9 +327,9 @@ func analyzeConversion(ctx context.Context, source archive, request Request, pal
 		return conversionAnalysis{}, fmt.Errorf("source project settings: %w", err)
 	}
 	current++
-	reportItemProgress(progress, current, total, projectSettingsName)
+	reportItemProgress(progress, current, total, ProgressDetail{Value: projectSettingsName})
 	usageTotal := materialUsageWorkTotal(source)
-	usage, err := analyzeMaterialUsage(source, func(usageCurrent, _ int, detail string) {
+	usage, err := analyzeMaterialUsage(source, func(usageCurrent, _ int, detail ProgressDetail) {
 		reportItemProgress(progress, current+usageCurrent, total, detail)
 	})
 	if err != nil {
@@ -310,7 +341,7 @@ func analyzeConversion(ctx context.Context, source archive, request Request, pal
 		return conversionAnalysis{}, err
 	}
 	current++
-	reportItemProgress(progress, current, total, "U1 baseline")
+	reportItemProgress(progress, current, total, ProgressDetail{Kind: ProgressDetailU1Baseline})
 	plan, err := planMaterials(sourceSettings, baseline.projectSettings, palette, materialPlanOptions{
 		fullSpectrum:    request.FullSpectrum,
 		preserveSlots:   request.PreserveMaterialSlots,
@@ -319,7 +350,7 @@ func analyzeConversion(ctx context.Context, source archive, request Request, pal
 		replacements:    request.MaterialReplacements,
 	}, usage)
 	current++
-	reportItemProgress(progress, current, total, "Material mapping")
+	reportItemProgress(progress, current, total, ProgressDetail{Kind: ProgressDetailMaterialMapping})
 	if err != nil {
 		return conversionAnalysis{}, err
 	}
@@ -376,7 +407,7 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 	writtenSliceInfo := false
 	total := writeArchiveWorkTotal(source, len(processData) > 0)
 	current := 0
-	reportItemProgress(progress, current, total, "Prepare output archive")
+	reportItemProgress(progress, current, total, ProgressDetail{Kind: ProgressDetailPrepareOutputArchive})
 	for _, file := range source.reader.File {
 		if err := ctx.Err(); err != nil {
 			writer.Close()
@@ -448,7 +479,7 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			}
 		}
 		current++
-		reportItemProgress(progress, current, total, file.Name)
+		reportItemProgress(progress, current, total, ProgressDetail{Value: file.Name})
 	}
 
 	if !writtenSliceInfo {
@@ -458,7 +489,7 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			return fmt.Errorf("write slice info: %w", err)
 		}
 		current++
-		reportItemProgress(progress, current, total, sliceInfoName)
+		reportItemProgress(progress, current, total, ProgressDetail{Value: sliceInfoName})
 	}
 	if len(processData) > 0 {
 		processHeader := zip.FileHeader{Name: processSettingsName, Method: zip.Deflate}
@@ -467,7 +498,7 @@ func writeArchive(ctx context.Context, output *os.File, source archive, baseline
 			return fmt.Errorf("write process settings: %w", err)
 		}
 		current++
-		reportItemProgress(progress, current, total, processSettingsName)
+		reportItemProgress(progress, current, total, ProgressDetail{Value: processSettingsName})
 	}
 	if err := writer.Close(); err != nil {
 		return fmt.Errorf("finalize output archive: %w", err)
@@ -694,7 +725,7 @@ func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings boo
 	defer reader.Close()
 	total := len(reader.File) + 1
 	current := 0
-	reportItemProgress(progress, current, total, "Open output archive")
+	reportItemProgress(progress, current, total, ProgressDetail{Kind: ProgressDetailOpenOutputArchive})
 	found := make(map[string]bool)
 	for _, file := range reader.File {
 		member, err := file.Open()
@@ -711,7 +742,7 @@ func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings boo
 		}
 		found[file.Name] = true
 		current++
-		reportItemProgress(progress, current, total, file.Name)
+		reportItemProgress(progress, current, total, ProgressDetail{Value: file.Name})
 	}
 	for _, required := range []string{projectSettingsName, modelSettingsName, mainModelName} {
 		if !found[required] {
@@ -742,7 +773,7 @@ func verifyArchive(path string, plan materialPlan, hasProjectProcessSettings boo
 		}
 	}
 	current++
-	reportItemProgress(progress, current, total, projectSettingsName)
+	reportItemProgress(progress, current, total, ProgressDetail{Value: projectSettingsName})
 	return nil
 }
 

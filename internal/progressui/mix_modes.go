@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/nzlov/btu/internal/i18n"
 )
 
 type MixModeOption struct {
@@ -57,24 +60,26 @@ const (
 )
 
 type colorPlanModel struct {
-	sources []ColorSourceRow
-	outputs []ColorOutputRow
-	options []MixModeOption
-	localZ  LocalZSelection
-	cursor  int
-	focus   colorPlanFocus
-	width   int
-	height  int
-	done    bool
-	err     error
+	sources   []ColorSourceRow
+	outputs   []ColorOutputRow
+	options   []MixModeOption
+	localZ    LocalZSelection
+	cursor    int
+	focus     colorPlanFocus
+	width     int
+	height    int
+	done      bool
+	err       error
+	localizer i18n.Localizer
 }
 
-func newColorPlanModel(sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption, localZ LocalZSelection) colorPlanModel {
+func newColorPlanModel(localizer i18n.Localizer, sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption, localZ LocalZSelection) colorPlanModel {
 	model := colorPlanModel{
-		sources: append([]ColorSourceRow(nil), sources...),
-		outputs: append([]ColorOutputRow(nil), outputs...),
-		options: append([]MixModeOption(nil), options...),
-		localZ:  localZ,
+		sources:   append([]ColorSourceRow(nil), sources...),
+		outputs:   append([]ColorOutputRow(nil), outputs...),
+		options:   append([]MixModeOption(nil), options...),
+		localZ:    localZ,
+		localizer: localizer,
 	}
 	model.normalizeFocus()
 	return model
@@ -247,18 +252,18 @@ func (model colorPlanModel) View() string {
 	colorRows := max(len(model.sources), len(model.outputs))
 	settingsStart := colorRows
 	if colorRows > 0 {
-		output.WriteString("Review color plan\n\n")
-		output.WriteString(padVisible("Original order", leftWidth))
-		output.WriteString("   New order / mode / replacement\n")
+		output.WriteString(model.localizer.Text(i18n.ColorPlanReviewTitle))
+		output.WriteString(padVisible(model.localizer.Text(i18n.ColorPlanOriginalOrder), leftWidth))
+		output.WriteString(model.localizer.Text(i18n.ColorPlanNewOrder))
 		settingsStart++
 	} else {
-		output.WriteString("Configure full-spectrum printing\n\n")
+		output.WriteString(model.localizer.Text(i18n.FullSpectrumConfigureTitle))
 	}
 	rowCount := settingsStart + 3
 	start, end := model.visibleRange(rowCount)
 	for index := start; index < end; index++ {
 		if index == colorRows && colorRows > 0 {
-			output.WriteString("Local-Z settings\n")
+			output.WriteString(model.localizer.Text(i18n.LocalZSettings))
 			continue
 		}
 		if index >= settingsStart {
@@ -309,11 +314,11 @@ func (model colorPlanModel) sourceView(row ColorSourceRow, compact bool) string 
 	if compact {
 		return fmt.Sprintf("T%d %s %s -> T%d", row.Slot, colorSwatch(row.Color), row.Color, target)
 	}
-	state := "unused"
+	state := model.localizer.Text(i18n.StateUnused)
 	if row.Used {
-		state = "used"
+		state = model.localizer.Text(i18n.StateUsed)
 	}
-	return fmt.Sprintf("T%d %s %s %-6s -> T%d", row.Slot, colorSwatch(row.Color), row.Color, state, target)
+	return fmt.Sprintf("T%d %s %s %s -> T%d", row.Slot, colorSwatch(row.Color), row.Color, padVisible(state, 6), target)
 }
 
 func (model colorPlanModel) outputView(index int, compact bool) string {
@@ -323,7 +328,7 @@ func (model colorPlanModel) outputView(index int, compact bool) string {
 		cursor = "> "
 	}
 	prefix := fmt.Sprintf("%sT%d %s %s", cursor, row.Slot, colorSwatch(row.Color), row.Color)
-	replacement := "Keep"
+	replacement := model.localizer.Text(i18n.ActionKeep)
 	if row.ReplacementSlot != row.Slot {
 		target := model.outputs[model.outputIndex(row.ReplacementSlot)]
 		if compact {
@@ -333,28 +338,28 @@ func (model colorPlanModel) outputView(index int, compact bool) string {
 		}
 	}
 	replacement = colorPlanControl(replacement, index == model.selectedOutputIndex() && model.focus == colorPlanReplacementFocus)
-	kind := "Material"
+	kind := model.localizer.Text(i18n.KindMaterial)
 	if row.Base {
-		kind = "Base"
+		kind = model.localizer.Text(i18n.KindBase)
 	}
 	if !row.Editable {
 		if row.Mixed {
-			return fmt.Sprintf("%s  %-8s [%s]", prefix, "Mixed", model.options[row.Mode].Label)
+			return fmt.Sprintf("%s  %s [%s]", prefix, padVisible(model.localizer.Text(i18n.KindMixed), 8), model.options[row.Mode].Label)
 		}
 		return fmt.Sprintf("%s  %s", prefix, kind)
 	}
 	if !row.Mixed {
-		return fmt.Sprintf("%s  %-8s %s", prefix, kind, replacement)
+		return fmt.Sprintf("%s  %s %s", prefix, padVisible(kind, 8), replacement)
 	}
 	mode := colorPlanControl(model.options[row.Mode].Label, index == model.selectedOutputIndex() && model.focus == colorPlanModeFocus)
-	return fmt.Sprintf("%s  %-8s %s %s", prefix, "Mixed", mode, replacement)
+	return fmt.Sprintf("%s  %s %s %s", prefix, padVisible(model.localizer.Text(i18n.KindMixed), 8), mode, replacement)
 }
 
 func (model colorPlanModel) localZView(index int) string {
 	labels := [...]string{
-		"Layer-height subdivision",
-		"Subdivide infill",
-		"Subdivide whole objects",
+		model.localizer.Text(i18n.LocalZLayerHeight),
+		model.localizer.Text(i18n.LocalZInfill),
+		model.localizer.Text(i18n.LocalZWholeObjects),
 	}
 	values := [...]bool{model.localZ.LayerHeight, model.localZ.Infill, model.localZ.WholeObjects}
 	cursor := "  "
@@ -362,11 +367,11 @@ func (model colorPlanModel) localZView(index int) string {
 	if selected {
 		cursor = "> "
 	}
-	value := "Disabled"
+	value := model.localizer.Text(i18n.StateDisabled)
 	if values[index] {
-		value = "Enabled"
+		value = model.localizer.Text(i18n.StateEnabled)
 	}
-	return fmt.Sprintf("%s%-28s %s", cursor, labels[index], colorPlanControl(value, selected))
+	return fmt.Sprintf("%s%s %s", cursor, padVisible(labels[index], 28), colorPlanControl(value, selected))
 }
 
 func colorPlanControl(label string, focused bool) string {
@@ -385,22 +390,7 @@ func padVisible(value string, width int) string {
 }
 
 func visibleWidth(value string) int {
-	width := 0
-	escape := false
-	for _, character := range value {
-		if escape {
-			if character == 'm' {
-				escape = false
-			}
-			continue
-		}
-		if character == '\x1b' {
-			escape = true
-			continue
-		}
-		width++
-	}
-	return width
+	return ansi.StringWidth(value)
 }
 
 func colorSwatch(color string) string {
@@ -415,15 +405,15 @@ func colorSwatch(color string) string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm  \x1b[0m", rgb>>16, rgb>>8&0xff, rgb&0xff)
 }
 
-func SelectColorPlan(ctx context.Context, input, output *os.File, sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption, localZ LocalZSelection) (ColorPlanResult, error) {
-	if err := validateColorPlan(sources, outputs, options); err != nil {
+func SelectColorPlan(ctx context.Context, input, output *os.File, localizer i18n.Localizer, sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption, localZ LocalZSelection) (ColorPlanResult, error) {
+	if err := validateColorPlan(localizer, sources, outputs, options); err != nil {
 		return ColorPlanResult{}, err
 	}
 	if !isTerminal(input) || !isTerminal(output) {
-		return ColorPlanResult{}, fmt.Errorf("cannot review the color plan without an interactive terminal")
+		return ColorPlanResult{}, fmt.Errorf("%s", localizer.Text(i18n.ColorPlanNonInteractive))
 	}
 	program := tea.NewProgram(
-		newColorPlanModel(sources, outputs, options, localZ),
+		newColorPlanModel(localizer, sources, outputs, options, localZ),
 		tea.WithContext(ctx),
 		tea.WithInput(input),
 		tea.WithOutput(output),
@@ -456,40 +446,40 @@ func (model colorPlanModel) selection() ColorPlanResult {
 	return ColorPlanResult{Colors: selections, LocalZ: model.localZ}
 }
 
-func validateColorPlan(sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption) error {
+func validateColorPlan(localizer i18n.Localizer, sources []ColorSourceRow, outputs []ColorOutputRow, options []MixModeOption) error {
 	if len(outputs) == 0 {
 		if len(sources) != 0 || len(options) != 0 {
-			return fmt.Errorf("color order review requires source colors, output colors, and mix modes")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanRequiresSourceOutputAndModes))
 		}
 		return nil
 	}
 	if len(sources) == 0 {
-		return fmt.Errorf("color order review requires source and output colors")
+		return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanRequiresSourceAndOutput))
 	}
 	mixed := 0
 	for index, row := range outputs {
 		if row.Slot != index+1 || row.Color == "" {
-			return fmt.Errorf("output color sequence is invalid")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanInvalidOutput))
 		}
 		if row.Base != (index < 4) || row.Base && row.Mixed {
-			return fmt.Errorf("output color sequence must keep physical colors in T1-T4")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanPhysicalSlotsRequired))
 		}
 		if row.Mixed {
 			mixed++
 		}
 		if row.Mixed && (row.Mode < 0 || row.Mode >= len(options)) {
-			return fmt.Errorf("mix mode selection is out of range")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanMixModeOutOfRange))
 		}
 		if row.Editable && (row.ReplacementSlot < 1 || row.ReplacementSlot > len(outputs)) {
-			return fmt.Errorf("color replacement is out of range")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanReplacementOutOfRange))
 		}
 	}
 	if mixed > 0 && len(options) == 0 {
-		return fmt.Errorf("mixed color review requires mix modes")
+		return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanMixModesRequired))
 	}
 	for index, row := range sources {
 		if row.Slot != index+1 || row.Color == "" || row.OutputSlot < 1 || row.OutputSlot > len(outputs) {
-			return fmt.Errorf("source color sequence is invalid")
+			return fmt.Errorf("%s", localizer.Text(i18n.ColorPlanInvalidSource))
 		}
 	}
 	return nil

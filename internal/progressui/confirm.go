@@ -6,6 +6,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nzlov/btu/internal/i18n"
 )
 
 type confirmModel struct {
@@ -48,9 +50,9 @@ func (model confirmModel) View() string {
 	return fmt.Sprintf("%s [y/N] ", model.prompt)
 }
 
-func Confirm(ctx context.Context, input, output *os.File, prompt string) (bool, error) {
+func Confirm(ctx context.Context, input, output *os.File, localizer i18n.Localizer, prompt string) (bool, error) {
 	if !isTerminal(input) || !isTerminal(output) {
-		return false, fmt.Errorf("cannot ask for confirmation without an interactive terminal")
+		return false, fmt.Errorf("%s", localizer.Text(i18n.ConfirmNonInteractive))
 	}
 	program := tea.NewProgram(
 		confirmModel{prompt: prompt},

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nzlov/btu/internal/i18n"
 )
 
 func TestColorPlanModelShowsSideBySideSequences(t *testing.T) {
@@ -18,6 +20,24 @@ func TestColorPlanModelShowsSideBySideSequences(t *testing.T) {
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestColorPlanModelUsesChineseCatalog(t *testing.T) {
+	localizer := i18n.FromLANG("zh_CN.UTF-8")
+	view := testColorPlanModelWithLocalizer(localizer).View()
+	for _, message := range []i18n.Message{
+		i18n.ColorPlanReviewTitle, i18n.ColorPlanOriginalOrder, i18n.ColorPlanNewOrder,
+		i18n.StateUsed, i18n.KindMixed, i18n.ModeRatio, i18n.ActionKeep, i18n.LocalZSettings,
+	} {
+		if text := strings.TrimSpace(localizer.Text(message)); !strings.Contains(view, text) {
+			t.Fatalf("Chinese view is missing %q:\n%s", text, view)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(view, "\n"), "\n") {
+		if width := visibleWidth(line); width > 92 {
+			t.Fatalf("line width = %d, want <= 92: %q", width, line)
 		}
 	}
 }
@@ -97,12 +117,12 @@ func TestColorPlanModelTogglesLocalZSettingsIndependently(t *testing.T) {
 }
 
 func TestColorPlanModelSupportsSettingsOnlyView(t *testing.T) {
-	model := newColorPlanModel(nil, nil, nil, LocalZSelection{Infill: true})
+	model := newColorPlanModel(i18n.EnglishLocalizer(), nil, nil, nil, LocalZSelection{Infill: true})
 	view := model.View()
 	if !strings.Contains(view, "Configure full-spectrum printing") || strings.Contains(view, "Original order") {
 		t.Fatalf("unexpected settings-only view:\n%s", view)
 	}
-	if err := validateColorPlan(nil, nil, nil); err != nil {
+	if err := validateColorPlan(i18n.EnglishLocalizer(), nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	selection := model.selection()
@@ -113,6 +133,7 @@ func TestColorPlanModelSupportsSettingsOnlyView(t *testing.T) {
 
 func TestColorPlanModelEditsNonMixedOutputWithoutShowingMixMode(t *testing.T) {
 	model := newColorPlanModel(
+		i18n.EnglishLocalizer(),
 		[]ColorSourceRow{{Slot: 1, Color: "#FF0000", Used: true, OutputSlot: 2}},
 		[]ColorOutputRow{
 			{Slot: 1, Color: "#00FFFF", Base: true, ReplacementSlot: 1},
@@ -153,7 +174,12 @@ func TestColorPlanModelUsesCompactColumnsOnNarrowTerminal(t *testing.T) {
 }
 
 func testColorPlanModel() colorPlanModel {
+	return testColorPlanModelWithLocalizer(i18n.EnglishLocalizer())
+}
+
+func testColorPlanModelWithLocalizer(localizer i18n.Localizer) colorPlanModel {
 	return newColorPlanModel(
+		localizer,
 		[]ColorSourceRow{
 			{Slot: 1, Color: "#5E43B7", Used: true, OutputSlot: 5},
 			{Slot: 2, Color: "#5E43B7", Used: false, OutputSlot: 5},
@@ -168,10 +194,10 @@ func testColorPlanModel() colorPlanModel {
 			{Slot: 6, Color: "#30A45B", Mixed: true, Editable: true, Mode: 0, ReplacementSlot: 6},
 		},
 		[]MixModeOption{
-			{Label: "Ratio", Value: "ratio"},
-			{Label: "Cycle", Value: "cycle"},
-			{Label: "Match", Value: "match"},
-			{Label: "Gradient", Value: "gradient"},
+			{Label: localizer.Text(i18n.ModeRatio), Value: "ratio"},
+			{Label: localizer.Text(i18n.ModeCycle), Value: "cycle"},
+			{Label: localizer.Text(i18n.ModeMatch), Value: "match"},
+			{Label: localizer.Text(i18n.ModeGradient), Value: "gradient"},
 		},
 		LocalZSelection{},
 	)

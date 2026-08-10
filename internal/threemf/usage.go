@@ -162,13 +162,13 @@ func analyzeMaterialUsage(source archive, progress itemProgressFunc) (projectMat
 		return projectMaterialUsage{}, fmt.Errorf("read model settings: %w", err)
 	}
 	current++
-	reportItemProgress(progress, current, total, modelSettingsName)
+	reportItemProgress(progress, current, total, ProgressDetail{Value: modelSettingsName})
 	mainModel, err := readMember(source.files[mainModelName])
 	if err != nil {
 		return projectMaterialUsage{}, fmt.Errorf("read main model: %w", err)
 	}
 	current++
-	reportItemProgress(progress, current, total, mainModelName)
+	reportItemProgress(progress, current, total, ProgressDetail{Value: mainModelName})
 
 	usage := projectMaterialUsage{Total: make(materialUsage)}
 	assignments, err := modelAssignments(modelSettings, mainModel, &usage)
@@ -182,7 +182,7 @@ func analyzeMaterialUsage(source archive, progress itemProgressFunc) (projectMat
 		}
 		if !hasAssignmentsForPath(assignments, name) {
 			current++
-			reportItemProgress(progress, current, total, name)
+			reportItemProgress(progress, current, total, ProgressDetail{Value: name})
 			continue
 		}
 		data, err := readMember(file)
@@ -193,7 +193,7 @@ func analyzeMaterialUsage(source archive, progress itemProgressFunc) (projectMat
 			return projectMaterialUsage{}, fmt.Errorf("analyze %s: %w", name, err)
 		}
 		current++
-		reportItemProgress(progress, current, total, name)
+		reportItemProgress(progress, current, total, ProgressDetail{Value: name})
 	}
 	return usage, nil
 }

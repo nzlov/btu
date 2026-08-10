@@ -62,6 +62,10 @@ go build -o btu ./cmd/btu
 
 ## Convert
 
+The CLI display language follows `LANG`. Locale values beginning with `zh`
+(such as `zh_CN.UTF-8` and `zh-TW`) use Simplified Chinese; all other values
+use English.
+
 ```sh
 ./btu \
     ~/Downloads/Fantasmino.3mf
