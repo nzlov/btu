@@ -667,9 +667,13 @@ func replaceNumericReferences(data []byte, pattern *regexp.Regexp, mapping map[i
 	position := 0
 	for _, match := range matches {
 		value, _ := strconv.Atoi(string(data[match[4]:match[5]]))
-		mapped, ok := mapping[value]
-		if !ok {
-			return nil, fmt.Errorf("%s references unknown material T%d", contextName, value)
+		mapped := value
+		if value != 0 {
+			var ok bool
+			mapped, ok = mapping[value]
+			if !ok {
+				return nil, fmt.Errorf("%s references unknown material T%d", contextName, value)
+			}
 		}
 		output.Write(data[position:match[4]])
 		output.WriteString(strconv.Itoa(mapped))

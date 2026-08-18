@@ -14,6 +14,23 @@ import (
 	"testing"
 )
 
+func TestRemapModelSettingsPreservesUnassignedExtruder(t *testing.T) {
+	input := []byte(`<config><metadata key="extruder" value="0"/><metadata key="extruder" value="1"/></config>`)
+	got, err := remapModelSettings(input, map[int]int{1: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<config><metadata key="extruder" value="0"/><metadata key="extruder" value="5"/></config>`
+	if string(got) != want {
+		t.Fatalf("model settings = %s, want %s", got, want)
+	}
+
+	_, err = remapModelSettings([]byte(`<metadata key="extruder" value="2"/>`), map[int]int{1: 5})
+	if err == nil || !strings.Contains(err.Error(), "unknown material T2") {
+		t.Fatalf("error = %v, want unknown material T2", err)
+	}
+}
+
 func TestConvertRequiresReplaceForExistingOutput(t *testing.T) {
 	directory := t.TempDir()
 	outputPath := filepath.Join(directory, "output.3mf")
